@@ -1,6 +1,6 @@
 import type { SessionRateLimit } from 'claude-code'
 
-import type { LimitTick, LimitTrack } from '../types'
+import type { LimitTrack } from '../types'
 
 /** The subscription windows the band shows, in display order. */
 export const WINDOWS = [
@@ -8,18 +8,9 @@ export const WINDOWS = [
   { kind: 'seven_day', label: 'week', lengthMs: 7 * 24 * 60 * 60_000 },
 ] as const
 
-/**
- * Folds the latest readings into the tracks, and turns each rise into a tick to
- * be split between the sessions that ran meanwhile. A reading below the last one
- * means the window reset: everything in the new window counts as the rise.
- */
-export const trackLimits = (
-  tracks: LimitTrack[],
-  readings: readonly SessionRateLimit[],
-  now: number,
-): { tracks: LimitTrack[]; ticks: LimitTick[] } => {
+/** Folds the latest readings into the tracks: each window's figure, its reset time, and when it was read. */
+export const trackLimits = (tracks: LimitTrack[], readings: readonly SessionRateLimit[], now: number): LimitTrack[] => {
   const next = [...tracks]
-  const ticks: LimitTick[] = []
 
   for (const reading of readings) {
     if (!WINDOWS.some(w => w.kind === reading.kind)) {
@@ -27,45 +18,41 @@ export const trackLimits = (
     }
 
     const at = next.findIndex(t => t.kind === reading.kind)
-    const old = next[at]
     const { kind, percentUsed, resetsAt } = reading
+    const track = { kind, percentUsed, resetsAt, since: next[at]?.since ?? now, readAt: now }
 
-    if (!old) {
-      next.push({ kind, percentUsed, resetsAt, since: now, readAt: now, mine: 0 })
-      continue
+    if (at < 0) {
+      next.push(track)
+    } else {
+      next[at] = track
     }
-
-    // A reset starts a new window: this session's share starts over with it.
-    const isReset = percentUsed < old.percentUsed
-    const epoch = (old.epoch ?? 0) + (isReset ? 1 : 0)
-    const points = isReset ? percentUsed : percentUsed - old.percentUsed
-    if (points > 0) {
-      ticks.push({ kind, points, from: old.readAt ?? old.since, to: now, epoch })
-    }
-    next[at] = { ...old, percentUsed, resetsAt, readAt: now, mine: isReset ? 0 : (old.mine ?? 0), epoch }
   }
 
-  return { tracks: next, ticks }
+  return next
 }
 
-/** Whether a rise belongs to the window the track is in now, not one that has since reset. */
-export const isCurrentTick = (track: LimitTrack, tick: LimitTick): boolean =>
-  track.kind === tick.kind && (track.epoch ?? 0) === (tick.epoch ?? 0)
+/** When a window began: its reset time less its length; undefined when the reset time is unknown. */
+export const windowStart = (track: LimitTrack, lengthMs: number): number | undefined => {
+  const resets = track.resetsAt === undefined ? NaN : Date.parse(track.resetsAt)
 
-/** Puts a tick's share down to this session: `share` from 0 (none of it) to 1 (all of it). */
-export const settleTick = (tracks: LimitTrack[], tick: LimitTick, share: number): LimitTrack[] =>
-  tracks.map(t => (isCurrentTick(t, tick) ? { ...t, mine: (t.mine ?? 0) + tick.points * share } : t))
+  return Number.isFinite(resets) ? resets - lengthMs : undefined
+}
 
 /**
- * Points of the window put down to this session, rises not yet split counted
- * whole until they are. Never more than the account has used of the window:
- * the session's work is part of the account's.
+ * This session's part of the window: the account's usage times this session's
+ * share of all the work done on this machine in the window. Shares of all the
+ * sessions add up to one, so their parts add up to the account's usage, and no
+ * part is ever more than it. Undefined until the share is known.
  */
-export const sessionDraw = (track: LimitTrack, pending: readonly LimitTick[] = []): number => {
-  const waiting = pending.filter(t => isCurrentTick(track, t)).reduce((sum, t) => sum + t.points, 0)
+export const sessionDraw = (track: LimitTrack, share: number | undefined): number | undefined =>
+  share === undefined ? undefined : track.percentUsed * Math.min(1, Math.max(0, share))
 
-  return Math.min(track.percentUsed, (track.mine ?? 0) + waiting)
-}
+/**
+ * A share from the work done in a window: this session's against every
+ * session's on this machine. Work no local session did (claude.ai, another
+ * device) cannot be placed, so it is shared out in the same proportions.
+ */
+export const shareOf = (own: number, all: number): number => (all > 0 ? own / all : 0)
 
 /** `23.46` → `23.5%`; a sliver above zero → `<0.1%`. */
 export const formatPercent = (value: number): string =>
@@ -92,13 +79,6 @@ export const formatDuration = (ms: number): string | undefined => {
 /** Time until `resetsAt`; undefined when unknown or past. */
 export const formatResetIn = (resetsAt: string | undefined, now: number): string | undefined =>
   resetsAt === undefined ? undefined : formatDuration(Date.parse(resetsAt) - now)
-
-/**
- * How long tracking has run, when it began well after the session did (a mod
- * loaded or a session resumed midway); undefined when it covers the session.
- */
-export const trackedFor = (startedAt: number | null, since: number, now: number): string | undefined =>
-  startedAt !== null && since - startedAt > 2 * 60_000 ? (formatDuration(now - since) ?? '<1m') : undefined
 
 /** The meter's colour when the window's timing is unknown: calm under half, a warning past it, an alarm near the limit. */
 export const levelColor = (percent: number): string => (percent >= 80 ? 'error' : percent >= 50 ? 'warning' : 'success')

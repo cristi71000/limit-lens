@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { LimitTick, LimitTrack, ModelTally, PriceState, RequestUsage } from '../types'
+import type { LimitTrack, ModelTally, PriceState, RequestUsage } from '../types'
 import {
   WINDOWS,
   formatDuration,
@@ -13,9 +13,8 @@ import {
   METER_SIZE,
   paceColor,
   sessionDraw,
-  isCurrentTick,
-  settleTick,
-  trackedFor,
+  shareOf,
+  windowStart,
   trackLimits,
 } from './limits'
 import { modelColor, shareBar } from './palette'
@@ -42,34 +41,13 @@ const models = atom({ plugin: 'limit-lens', key: 'models' } as const, [])
 const requests = atom({ plugin: 'limit-lens', key: 'requests' } as const, [])
 const prices = atom({ plugin: 'limit-lens', key: 'prices' } as const, BUILT_IN)
 const limits = atom({ plugin: 'limit-lens', key: 'limits' } as const, [])
-const startedAt = atom({ plugin: 'limit-lens', key: 'startedAt' } as const, null)
-const ticks = atom({ plugin: 'limit-lens', key: 'ticks' } as const, [])
+const shares = atom({ plugin: 'limit-lens', key: 'shares' } as const, {})
 
-/** A rise is split once the other sessions' logs have had this long to record the requests behind it. */
-const SETTLE_MS = 5000
-
-/** Folds new readings in: the tracks move on, and each rise waits as a tick to be split. */
+/** Folds new readings in: each window's figure, reset time and when it was read. */
 const takeReadings = async ($: EngineInterface, readings: Parameters<typeof trackLimits>[1], now: number) => {
-  const { tracks, ticks: rises } = trackLimits(await read($, limits), readings, now)
+  const tracks = trackLimits(await read($, limits), readings, now)
   await update($, limits, () => tracks)
-  // Rises still waiting from a window that has since reset no longer count.
-  const isCurrent = (tick: LimitTick) => tracks.some(t => isCurrentTick(t, tick)) || !tracks.some(t => t.kind === tick.kind)
-  await update($, ticks, held => [...held.filter(isCurrent), ...rises])
 }
-
-/** What this session's own requests answered from `from` to `to` cost at the table's rates. */
-const ownCost = (list: RequestUsage[], table: PriceState, from: number, to: number): number =>
-  list
-    .filter(r => r.at !== undefined && r.at >= from && r.at <= to)
-    .reduce((sum, r) => sum + (priceRequest(table.models, r.model, r) ?? 0), 0)
-
-/**
- * This session's share of a rise: its own work against every session's on this
- * machine over the same span. Work no local session did (claude.ai, another
- * device) is not this session's; when the logs cannot be read, all of it is.
- */
-export const shareOf = (own: number, others: number | null): number =>
-  others === null ? 1 : own + others > 0 ? own / (own + others) : 0
 
 /** `claude-opus-5-5[1m]` → `Opus 5.5 (1M)`, `opus-6` → `Opus 6`; anything unrecognised stays as given. */
 export const modelLabel = (id: string): string => {
@@ -171,7 +149,6 @@ export const register: Register = on => {
     if (cost) {
       await update($, usd, () => cost.usd)
     }
-    await update($, startedAt, () => usage.startedAt)
     await takeReadings($, rateLimits, now)
 
     // Start from the last good prices any session fetched, then keep them current in the background.
@@ -195,44 +172,50 @@ export const register: Register = on => {
     $.clock.after(1000, () => void check())
     $.clock.every(CHECK_MS, () => void check())
 
-    // The other sessions' logs, read a piece at a time, to split each rise of the account's usage.
+    // Every session's log on this machine, read a piece at a time, to tell this session's share of each window.
     const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('HOME')) ?? ''}/.claude`
     const scanner = makeScanner($, `${configDir}/projects`, await $.session.id())
 
-    let isSettling = false
-    const settle = async () => {
-      const at = await $.clock.now()
-      const ready = (await read($, ticks)).filter(t => t.to <= at - SETTLE_MS)
-
-      if (isSettling || ready.length === 0) {
+    let isMeasuring = false
+    const measureShares = async () => {
+      if (isMeasuring) {
         return
       }
-      isSettling = true
+      isMeasuring = true
       try {
-        const earliest = Math.min(...ready.map(t => t.from))
-        const isRead = await scanner.refresh(earliest - 60_000)
-        const table = await read($, prices)
-        const own = await read($, requests)
+        const at = await $.clock.now()
+        const tracks = await read($, limits)
+        // Each window from its start: the reset time less its length, or when tracking began.
+        const starts = WINDOWS.flatMap(w => {
+          const track = tracks.find(t => t.kind === w.kind)
 
-        const shares = ready.map(tick => {
-          const others = isRead ? scanner.costBetween(table.models, tick.from, tick.to) : null
-
-          return { tick, share: shareOf(ownCost(own, table, tick.from, tick.to), others) }
+          return track ? [{ kind: w.kind, from: windowStart(track, w.lengthMs) ?? track.since }] : []
         })
-        // Applied to the tracks as they stand now: readings that came in during the scan are kept.
-        await update($, limits, current => shares.reduce((tracks, { tick, share }) => settleTick(tracks, tick, share), current))
-        const isSame = (a: LimitTick, b: LimitTick) =>
-          a.kind === b.kind && a.from === b.from && a.to === b.to && a.points === b.points
-        await update($, ticks, held => held.filter(t => !ready.some(r => isSame(r, t))))
-        scanner.forget(Math.min(at - 60 * 60_000, ...(await read($, ticks)).map(t => t.from)))
+        if (starts.length === 0) {
+          return
+        }
+
+        const earliest = Math.min(...starts.map(s => s.from))
+        if (!(await scanner.refresh(earliest))) {
+          return
+        }
+
+        const table = await read($, prices)
+        const measured: Record<string, number> = {}
+        for (const { kind, from } of starts) {
+          const { own, all } = scanner.workSince(table.models, from)
+          measured[kind] = shareOf(own, all)
+        }
+        await update($, shares, () => measured)
+        scanner.forget(Math.min(earliest, at))
       } finally {
-        isSettling = false
+        isMeasuring = false
       }
     }
 
-    // Local work only, no network and no model calls: split waiting rises, then redraw for the countdowns.
+    // Local work only, no network and no model calls: this session's shares, then a redraw for the countdowns.
     const poll = async () => {
-      await settle()
+      await measureShares()
       $.ui.invalidate('ui.render')
     }
     $.clock.every(POLL_MS, () => void poll())
@@ -400,13 +383,11 @@ export const register: Register = on => {
     )
 
     if (isSubscription) {
-      const pending = await read($, ticks)
-      const draws = windows.map(w => sessionDraw(w.track, pending))
+      const known = await read($, shares)
+      const draws = windows.map(w => sessionDraw(w.track, known[w.kind]))
       // How old the account figure is: it only moves when this session hears back from the API.
       const readAt = Math.max(...windows.map(w => w.track.readAt ?? w.track.since))
       const readingAge = now - readAt >= 60_000 ? formatDuration(now - readAt) : undefined
-      const since = Math.min(...windows.map(w => w.track.since))
-      const trackedSpan = trackedFor(await read($, startedAt), since, now)
 
       const limitsTable = table('limits', [
         column('limits-labels', [
@@ -421,7 +402,7 @@ export const register: Register = on => {
               </Text>,
             ],
           ),
-          cell('limits-session-label', label(trackedSpan ? `This session (${trackedSpan})` : 'This session')),
+          cell('limits-session-label', label('This session')),
           cell('limits-account-label', label(readingAge ? `Account (${readingAge} ago)` : 'Account')),
           cell('limits-reset-label', label('Resets in')),
         ]),
@@ -435,7 +416,7 @@ export const register: Register = on => {
             cell(
               `session-${w.kind}`,
               <Text bold color="claude">
-                {formatPercent(sessionDraw(w.track, pending))}
+                {draws[windows.indexOf(w)] === undefined ? '—' : formatPercent(draws[windows.indexOf(w)]!)}
               </Text>,
             ),
             cell(
@@ -482,7 +463,10 @@ export const register: Register = on => {
         limitsTable,
         whatIfTable(
           windows.map(w => w.label),
-          i => (comparison.ratios.length > 0 ? draws.map(d => formatPercent(d * (comparison.ratios[i] ?? 0))) : undefined),
+          i =>
+            comparison.ratios.length > 0
+              ? draws.map(d => (d === undefined ? '—' : formatPercent(d * (comparison.ratios[i] ?? 0))))
+              : undefined,
         ),
       )
     }

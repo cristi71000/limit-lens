@@ -145,7 +145,8 @@ test('on a subscription the band shows the limits and each tier projected draw',
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'limit-lens', surface, ...BAND })
     expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets in')
-    expect([await textOf(ui, 'session-five_hour'), await textOf(ui, 'session-seven_day')]).toEqual(['3%', '0.6%'])
+    // No session logs have been read in this test: the share is not known yet.
+    expect([await textOf(ui, 'session-five_hour'), await textOf(ui, 'session-seven_day')]).toEqual(['—', '—'])
     // 2h 50m of 5h gone by (57%) and 3d 20h of a week (55%) both fall in the sixth of ten cells.
     if (surface === 'terminal') {
       expect(await textOf(ui, 'account-five_hour')).toBe(`██░░░┃░░░░ 23%`)
@@ -165,10 +166,10 @@ test('on a subscription the band shows the limits and each tier projected draw',
     expect([await textOf(ui, 'reset-five_hour'), await textOf(ui, 'reset-seven_day')]).toEqual(['2h 10m', '3d 4h'])
     expect(await textOf(ui, 'models')).toBe(`Models  ${BARS}   ● Opus 5.5 2 req   ○ Haiku 5.5 1 req`)
     expect(await whatIf(ui, 2)).toEqual([
-      ['11.1%', '2.2%'],
-      ['4.4%', '0.9%'],
-      ['2.2%', '0.4%'],
-      ['0.1%', '<0.1%'],
+      ['—', '—'],
+      ['—', '—'],
+      ['—', '—'],
+      ['—', '—'],
     ])
     await ui.unmount()
   }
@@ -210,13 +211,7 @@ test('limit readings count even when no window moved a whole point', async ($, o
 
   const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: ' 20.4%' })).toBeDefined()
-  expect([await textOf(ui, 'session-five_hour'), await textOf(ui, 'session-seven_day')]).toEqual(['0.4%', '0.1%'])
-  expect(await whatIf(ui, 2)).toEqual([
-    ['1.5%', '0.4%'],
-    ['0.6%', '0.1%'],
-    ['0.3%', '0.1%'],
-    ['<0.1%', '<0.1%'],
-  ])
+  expect(await textOf(ui, 'account-five_hour')).toContain(' 20.4%')
   await ui.unmount()
 })
 
@@ -348,35 +343,57 @@ test('every 10 seconds the band re-reads the figures and its countdown moves, wi
   await ui.unmount()
 })
 
-test("a rise is split with the machine's other sessions by their share of the work", async ($, on) => {
-  const clock = mock.clock(on, { now: NOW })
-  mock.store(on)
+/**
+ * A machine whose projects folder holds this session's log ("me", with a subagent's), another
+ * session's ("other"), and an older copy of one of this session's responses ("old"), as a
+ * conversation moved to a new session leaves behind.
+ */
+const fakeMachine = (on: On, logs: Record<string, string>) => {
   mock.env(on, { HOME: '/home/u' })
   on('session.id', async () => ({ value: 'me' }))
+  const root = '/home/u/.claude/projects'
+  const file = (name: string, text: string) => ({ name, kind: 'file' as const, size: text.length, mtimeMs: NOW, isLink: false })
+  on('fs.list', async (_$, e) => {
+    if (e.path === root) {
+      return { value: [{ name: 'p', kind: 'dir' as const, size: 0, mtimeMs: NOW, isLink: false }] }
+    }
+    if (e.path === `${root}/p`) {
+      return {
+        value: [
+          ...['me.jsonl', 'other.jsonl', 'old.jsonl'].map(name => file(name, logs[name] ?? '')),
+          { name: 'me', kind: 'dir' as const, size: 0, mtimeMs: NOW, isLink: false },
+        ],
+      }
+    }
+
+    return { value: [file('agent-1.jsonl', logs['me/subagents/agent-1.jsonl'] ?? '')] }
+  })
+  on('fs.exists', async (_$, e) => ({ value: e.path === `${root}/p/me/subagents` }))
+  on('process.run', async (_$, e) => {
+    const from = Number(String(e.argv[2]).slice(1)) - 1
+    const path = String(e.argv[3]).replace(`${root}/p/`, '')
+
+    return { value: { exitCode: 0, stdout: (logs[path] ?? '').slice(from), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+}
+
+const logLine = (id: string, msAgo: number) =>
+  `${JSON.stringify({ type: 'assistant', timestamp: new Date(NOW - msAgo).toISOString(), message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n`
+
+test("this session's share is its part of all local work in the window, so sessions add up to the account", async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: PRICING_PAGE } }))
   answerSteps(on)
-
-  // Another session's log, which grows between the two rises; this session's own log is passed over.
-  const iso = (ms: number) => new Date(NOW + ms).toISOString()
-  const entry = (id: string, ms: number) =>
-    `${JSON.stringify({ type: 'assistant', timestamp: iso(ms), message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n`
-  // Each response is logged once per content block: the repeat must count once.
-  let other = entry('msg_a', 1000) + entry('msg_a', 1000)
-  const reads: string[] = []
-  const files = () => [
-    { name: 'other.jsonl', kind: 'file' as const, size: other.length, mtimeMs: NOW + 1000, isLink: false },
-    { name: 'me.jsonl', kind: 'file' as const, size: 999, mtimeMs: NOW + 1000, isLink: false },
-  ]
-  on('fs.list', async (_$, e) => ({
-    value: e.path === '/home/u/.claude/projects' ? [{ name: 'p', kind: 'dir' as const, size: 0, mtimeMs: NOW, isLink: false }] : files(),
-  }))
-  on('fs.exists', async () => ({ value: false }))
-  on('process.run', async (_$, e) => {
-    const from = Number(String(e.argv[2]).slice(1)) - 1
-    reads.push(`${String(e.argv[3]).split('/').pop()}@${from}`)
-
-    return { value: { exitCode: 0, stdout: other.slice(from), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  const minute = 60_000
+  fakeMachine(on, {
+    // This session: two responses of its own and one from its subagent, interleaved with the other's.
+    'me.jsonl': logLine('m1', 50 * minute) + logLine('m1', 50 * minute) + logLine('m2', 10 * minute),
+    'me/subagents/agent-1.jsonl': logLine('s1', 30 * minute),
+    'other.jsonl': logLine('o0', 120 * minute) + logLine('o1', 40 * minute) + logLine('o2', 20 * minute) + logLine('o3', 1 * minute),
+    // A copy of this session's own response, left in an older log: counted once, as this session's.
+    'old.jsonl': logLine('m1', 50 * minute),
   })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('session.usage', async () => ({
@@ -384,76 +401,27 @@ test("a rise is split with the machine's other sessions by their share of the wo
       startedAt: NOW,
       context: { window: 200000 } as never,
       rateLimits: [
-        { kind: 'five_hour', percentUsed: 20 },
-        { kind: 'seven_day', percentUsed: 40 },
+        // The 5-hour window began an hour ago; the week, four days ago.
+        { kind: 'five_hour', percentUsed: 6, resetsAt: new Date(NOW + 4 * 60 * minute).toISOString() },
+        { kind: 'seven_day', percentUsed: 40, resetsAt: new Date(NOW + 3 * 24 * 60 * minute).toISOString() },
       ],
     },
   }))
-  const measure = (fiveHour: number) =>
-    $.session.measure({
-      context: { window: 200000 } as never,
-      rateLimits: [
-        { kind: 'five_hour', percentUsed: fiveHour },
-        { kind: 'seven_day', percentUsed: 40 },
-      ],
-      cost: { usd: 0.1 },
-      changed: ['cost'],
-    })
-  const step = async () => {
-    for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) {
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: true })
+  for (const _ of [1, 2]) {
+    for await (const _step of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) {
       // drain
     }
   }
-
-  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: true })
-  // This session does two requests' work, the other session one, and the account rises two points.
-  await step()
-  await step()
-  await clock.advance(2000)
-  await measure(22)
-
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
-  // Until the poll splits it, the rise counts whole.
-  expect(await textOf(ui, 'session-five_hour')).toBe('2%')
-  await clock.advance(20_000)
-  // Two thirds of two points.
-  expect(await textOf(ui, 'session-five_hour')).toBe('1.3%')
-
-  // The other session does all the work behind the next rise: none of it is this session's.
-  other += entry('msg_b', 25_000)
-  await clock.advance(5000)
-  await measure(23)
-  await clock.advance(20_000)
-  expect(await textOf(ui, 'session-five_hour')).toBe('1.3%')
-  expect(await textOf(ui, 'session-seven_day')).toBe('0%')
-
-  // The other log was read from the start once, then only from where it stopped; this session's never.
-  expect(reads).toEqual([`other.jsonl@0`, `other.jsonl@${(entry('msg_a', 1000) + entry('msg_a', 1000)).length}`])
-  await ui.unmount()
-})
-
-test('across a reset the band never shows the session above the account', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
-  answerSteps(on)
-  const measure = (fiveHour: number) =>
-    $.session.measure({
-      context: { window: 200000 } as never,
-      rateLimits: [
-        { kind: 'five_hour', percentUsed: fiveHour },
-        { kind: 'seven_day', percentUsed: 40 },
-      ],
-      cost: { usd: 0.1 },
-      changed: ['cost'],
-    })
-
-  await measure(90)
-  await measure(95)
-  // The 5-hour window resets: the account is at 2%, and so, at most, is this session.
-  await measure(2)
+  await clock.advance(10_000)
 
   const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
-  expect(await textOf(ui, 'session-five_hour')).toBe('2%')
-  expect(await textOf(ui, 'account-five_hour')).toContain(' 2%')
+  // On Fable the same work would cost 2.5 times as much: 7.5% of the 5 hours, 42.9% of the week.
+  expect((await whatIf(ui, 2))[0]).toEqual(['7.5%', '42.9%'])
+  // 5 hours: three of six responses in the window are this session's, half of 6%.
+  expect(await textOf(ui, 'session-five_hour')).toBe('3%')
+  // The week also holds the other session's response from two hours ago: 3 of 7, of 40%.
+  expect(await textOf(ui, 'session-seven_day')).toBe('17.1%')
   await ui.unmount()
 })

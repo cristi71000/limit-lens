@@ -1,6 +1,5 @@
 import { expect, test } from 'claude-code/testing'
 
-import { shareOf } from '../hooks/register'
 import { parseLogLine } from '../hooks/sessions'
 
 // The shape of a response line in a session log, as seen in this machine's logs.
@@ -37,11 +36,3 @@ test('lines that are not responses, or not whole, are passed over', async () => 
   expect(parseLogLine('')).toBeNull()
 })
 
-test("a rise is this session's in proportion to its share of the work", async () => {
-  expect(Math.round(shareOf(2, 1) * 1000)).toBe(667)
-  expect(shareOf(1, 0)).toBe(1)
-  // Nobody on this machine worked: claude.ai or another device did it.
-  expect(shareOf(0, 0)).toBe(0)
-  // The other logs could not be read: count it all as this session's.
-  expect(shareOf(0, null)).toBe(1)
-})

@@ -37,10 +37,7 @@ export type PriceState = {
   failure?: string
 }
 
-/**
- * One subscription limit window (`five_hour`, `seven_day`) as last read, and
- * the points of it put down to this session (`mine`).
- */
+/** One subscription limit window (`five_hour`, `seven_day`) as last read. */
 export type LimitTrack = {
   kind: string
   percentUsed: number
@@ -49,17 +46,7 @@ export type LimitTrack = {
   since: number
   /** When the last reading arrived: the account figure is as of then. */
   readAt: number
-  /** Points of the window put down to this session, from the rises split so far. */
-  mine: number
-  /** How many times the window has reset while tracked; a rise counts only toward the window it happened in. */
-  epoch?: number
 }
-
-/**
- * A rise of the account's reading, waiting to be split between this session and
- * the others that ran from `from` to `to` (milliseconds).
- */
-export type LimitTick = { kind: string; points: number; from: number; to: number; epoch?: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -69,10 +56,8 @@ declare module 'claude-code' {
       requests: RequestUsage[]
       prices: PriceState
       limits: LimitTrack[]
-      /** Rises not yet split; counted as this session's until they are. */
-      ticks: LimitTick[]
-      /** When the session began, in `$.clock.now()`'s milliseconds. */
-      startedAt: number | null
+      /** This session's share of each window's work on this machine, by window kind, once the logs are read. */
+      shares: Record<string, number>
     }
   }
 }
