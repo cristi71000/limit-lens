@@ -1,0 +1,13 @@
+{
+  "name": "limit-lens",
+  "description": "limit-lens: see how much of your Claude usage limits each session uses, and what the same work would cost on each model",
+  "owner": {
+    "name": "cristi71000"
+  },
+  "plugins": [
+    {
+      "name": "limit-lens",
+      "source": "./"
+    }
+  ]
+}

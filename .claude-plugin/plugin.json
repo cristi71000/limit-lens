@@ -1,0 +1,7 @@
+{
+  "name": "limit-lens",
+  "version": "0.1.0",
+  "description": "A band above the prompt showing this session's share of your usage limits, its API-equivalent cost, and what the same work would cost on each Claude model",
+  "author": { "name": "cristi71000" },
+  "types": "./types/index.d.ts"
+}
