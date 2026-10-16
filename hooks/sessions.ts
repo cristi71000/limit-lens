@@ -1,4 +1,4 @@
-import type { EngineInterface } from 'claude-code'
+import type { FsEntry } from 'claude-code'
 
 import type { Price, RequestUsage } from '../types'
 import { priceRequest } from './pricing'
@@ -10,6 +10,16 @@ type Log = { offset: number; size: number }
 
 /** One response from the logs, and the session it belongs to. */
 type Response = { request: RequestUsage; owner: string }
+
+/**
+ * How the scanner reaches the logs: list a folder, check one exists, and read a
+ * log from a byte offset on (the rest of the file, or null when it cannot be read).
+ */
+export type LogAccess = {
+  list: (path: string) => Promise<FsEntry[]>
+  exists: (path: string) => Promise<boolean>
+  readFrom: (path: string, offset: number) => Promise<string | null>
+}
 
 /** What a session's log says about it: its title as last set, and the folder it runs in. */
 export type SessionInfo = { title?: string; cwd?: string }
@@ -97,7 +107,7 @@ export const parseLogLine = (line: string): { id: string; request: RequestUsage 
  * many logs hold it (a conversation that moved to a new session leaves copies
  * behind), and belongs to this session (`ownId`) whenever one of its copies does.
  */
-export function makeScanner($: EngineInterface, projectsDir: string, ownId: string) {
+export const makeScanner = (access: LogAccess, projectsDir: string, ownId: string) => {
   const logs = new Map<string, Log>()
   const responses = new Map<string, Response>()
   const infos = new Map<string, SessionInfo>()
@@ -106,9 +116,9 @@ export function makeScanner($: EngineInterface, projectsDir: string, ownId: stri
   /** The text from `offset` on, up to a chunk; null when the file cannot be read. */
   const readFrom = async (path: string, offset: number): Promise<string | null> => {
     try {
-      const { exitCode, stdout } = await $.process.run(['tail', '-c', `+${offset + 1}`, path], { timeoutMs: 10_000 })
+      const text = await access.readFrom(path, offset)
 
-      return exitCode === 0 ? stdout.slice(0, CHUNK_BYTES) : null
+      return text === null ? null : text.slice(0, CHUNK_BYTES)
     } catch {
       return null
     }
@@ -166,21 +176,21 @@ export function makeScanner($: EngineInterface, projectsDir: string, ownId: stri
   const refresh = async (after: number): Promise<boolean> => {
     try {
       let isWhole = true
-      for (const project of await $.fs.list(projectsDir)) {
+      for (const project of await access.list(projectsDir)) {
         if (project.kind !== 'dir') {
           continue
         }
 
         const dir = `${projectsDir}/${project.name}`
-        for (const entry of await $.fs.list(dir)) {
+        for (const entry of await access.list(dir)) {
           if (entry.kind === 'file' && entry.name.endsWith('.jsonl') && entry.mtimeMs >= after) {
             isWhole = (await readLog(`${dir}/${entry.name}`, entry.size, entry.name.replace(/\.jsonl$/, ''))) && isWhole
           }
           // A folder's own time does not move when a subagent log in it grows: check each log's.
           if (entry.kind === 'dir') {
             const subagents = `${dir}/${entry.name}/subagents`
-            if (await $.fs.exists(subagents)) {
-              for (const log of await $.fs.list(subagents)) {
+            if (await access.exists(subagents)) {
+              for (const log of await access.list(subagents)) {
                 if (log.kind === 'file' && log.name.endsWith('.jsonl') && log.mtimeMs >= after) {
                   isWhole = (await readLog(`${subagents}/${log.name}`, log.size, entry.name)) && isWhole
                 }

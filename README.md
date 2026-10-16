@@ -56,13 +56,15 @@ Prices are read from Anthropic's [pricing page](https://platform.claude.com/docs
 
 ## What it reads, runs and fetches
 
-Everything stays on your machine; limit-lens sends nothing anywhere.
+Everything stays on your machine. limit-lens sends no data anywhere: its one network request carries nothing from your machine or your sessions.
 
 - **Claude Code's own figures**: this session's token usage, model and the limit readings Claude Code reports with each response.
-- **Your local session logs**: the files under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), read for each response's token counts and model, each session's title and the folder it ran in. This is how it splits the account's usage across your sessions and projects. Only those fields are kept; message text is never stored or shown.
-- **`tail`**: runs `tail -c +N <log>` to read only the part of each log that is new since the last check, every 10 seconds.
-- **One web page**: a plain GET of Anthropic's public pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`, once every 12 hours, or every 30 minutes while a model you use is not yet priced. Nothing is sent with it.
+- **Your local session logs**: the files under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), read for each response's token counts and model, each session's title and the folder it ran in. This is how it splits the account's usage across your sessions and projects. Only those fields are kept, in memory; message text is never stored, shown or sent.
+- **Two environment variables**: `HOME` and `CLAUDE_CONFIG_DIR`, read only to find the folder above. They are paths, not credentials, and are never sent anywhere.
+- **One program, `tail`**: the only command it runs, always as `tail -c +N <log>`, where `<log>` is one of the session logs above and `N` the byte it stopped at last time. This reads only what each log gained since the last check (every 10 seconds) instead of the whole file. It runs nothing else and takes no commands from anywhere.
+- **One web page, fetched**: a plain GET, with no body, parameters or credentials, of Anthropic's public pricing page `https://platform.claude.com/docs/en/about-claude/pricing.md`. It is fetched once every 12 hours, or every 30 minutes while a model you use is not yet priced, and only its "Model pricing" table is read. platform.claude.com is the only host the plugin contacts.
 - **Stored on your machine**: the last prices it read, in the plugin's own store, so new sessions start priced.
+- **The `/limits` command**: limit-lens adds `/limits` and answers it itself by opening its Details pane. It does not see or change any other command.
 
 ## Licence
 

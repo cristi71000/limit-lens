@@ -22,7 +22,7 @@ import {
   trackLimits,
 } from './limits'
 import { modelColor, shareBar } from './palette'
-import { BUILT_IN, PRICING_URL, parsePricingPage, priceKey, priceRequest, toRequest } from './pricing'
+import { BUILT_IN, parsePricingPage, priceKey, priceRequest, toRequest } from './pricing'
 import { makeScanner } from './sessions'
 import type { SessionWork } from './sessions'
 
@@ -144,7 +144,8 @@ const refreshPrices = async ($: EngineInterface) => {
   const now = await $.clock.now()
 
   try {
-    const { ok, status, text } = await $.http.fetch(PRICING_URL)
+    // Anthropic's pricing page as markdown: its "Model pricing" table is what the mod reads.
+    const { ok, status, text } = await $.http.fetch('https://platform.claude.com/docs/en/about-claude/pricing.md')
     const table = ok ? parsePricingPage(text) : null
 
     if (!table) {
@@ -209,7 +210,20 @@ export const register: Register = (on, options) => {
 
     // Every session's log on this machine, read a piece at a time, to tell this session's share of each window.
     const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('HOME')) ?? ''}/.claude`
-    const scanner = makeScanner($, `${configDir}/projects`, await $.session.id())
+    const scanner = makeScanner(
+      {
+        list: path => $.fs.list(path),
+        exists: path => $.fs.exists(path),
+        // `tail -c +N` prints a log from byte N on, so each pass reads only what was added since the last.
+        readFrom: async (path, offset) => {
+          const { exitCode, stdout } = await $.process.run(['tail', '-c', `+${offset + 1}`, path], { timeoutMs: 10_000 })
+
+          return exitCode === 0 ? stdout : null
+        },
+      },
+      `${configDir}/projects`,
+      await $.session.id(),
+    )
 
     let isMeasuring = false
     const measureShares = async () => {

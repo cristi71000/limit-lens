@@ -2,9 +2,6 @@ import type { ModelUsage } from 'claude-code'
 
 import type { Price, PriceState, Rates, RequestUsage } from '../types'
 
-/** Anthropic's pricing page as markdown: its "Model pricing" table is what the mod reads. */
-export const PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pricing.md'
-
 const haiku55: Price = {
   input: 0.1,
   cacheWrite: 0.125,
