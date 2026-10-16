@@ -90,23 +90,51 @@ export const elapsedFraction = (resetsAt: string | undefined, lengthMs: number, 
   return Number.isFinite(at) ? Math.min(1, Math.max(0, 1 - (at - now) / lengthMs)) : undefined
 }
 
-/** How many points either side of an even pace still reads as on pace. */
-const PACE_SLACK = 5
+/** How many points either side of an even pace still read as on pace, unless the settings say otherwise. */
+export const PACE_SLACK = 5
 
 /**
  * The meter's colour by pace: usage against the share of the window gone by.
- * More than 5 points under is green, within 5 either way yellow, more than 5
- * over red. Without the window's timing, the plain level decides.
+ * More than `slack` points under is green, within it either way yellow, more
+ * than it over red. Without the window's timing, the plain level decides.
  */
-export const paceColor = (percent: number, elapsed: number | undefined): string => {
+export const paceColor = (percent: number, elapsed: number | undefined, slack = PACE_SLACK): string => {
   if (elapsed === undefined) {
     return levelColor(percent)
   }
 
   const ahead = percent - elapsed * 100
 
-  return ahead < -PACE_SLACK ? 'success' : ahead > PACE_SLACK ? 'error' : 'warning'
+  return ahead < -slack ? 'success' : ahead > slack ? 'error' : 'warning'
 }
+
+/** Where the window is heading at the pace so far: the limit before the reset, or the share used by then. */
+export type Forecast = { kind: 'limit'; inMs: number } | { kind: 'reset'; percent: number }
+
+/**
+ * The window's course at its average pace so far: usage over the share of the
+ * window gone by. Too early in a window (under 5% of it) or with nothing used,
+ * there is no pace to go by.
+ */
+export const forecast = (percent: number, elapsed: number | undefined, lengthMs: number): Forecast | undefined => {
+  if (elapsed === undefined || elapsed < 0.05 || percent <= 0) {
+    return undefined
+  }
+
+  const perMs = percent / (elapsed * lengthMs)
+  const toLimit = (100 - percent) / perMs
+  const toReset = (1 - elapsed) * lengthMs
+
+  return toLimit < toReset ? { kind: 'limit', inMs: Math.max(0, toLimit) } : { kind: 'reset', percent: percent / elapsed }
+}
+
+/** `limit in ~1h 20m`, `limit any minute`, `≈70% at reset`. */
+export const formatForecast = (course: Forecast): string =>
+  course.kind === 'limit'
+    ? course.inMs < 60_000
+      ? 'limit any minute'
+      : `limit in ~${formatDuration(course.inMs)}`
+    : `≈${Math.round(course.percent)}% at reset`
 
 /** One run of the meter: filled cells, empty cells, or the marker for the time gone by. */
 export type MeterRun = { kind: 'filled' | 'empty' | 'marker'; text: string }

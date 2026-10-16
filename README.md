@@ -34,6 +34,18 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 - **If all on**: the same work priced on the newest Opus, Sonnet, Haiku and Fable models, as a share of each limit window. On API billing, the panel shows dollar cost instead.
 - **Models**: which models answered this session's requests, and how many each.
 
+- **One line by default**: the panel shows each window's meter, this session's part and the forecast on a single line. The **⌄** in its top-right corner expands it to the tables above, and **⌃** collapses it again; **Details** (`d`) opens the side pane.
+- **Forecast**: where each window is heading at its pace so far, either `limit in ~1h 20m` or `≈70% at reset`.
+- **Details pane** (`/limits`, or **Details**): every local session's part of the 5-hour window, each project's part of the week, this session's prompt-cache hit rate and full re-reads (with what they cost over cache hits), and how full its context window is.
+
+## Settings
+
+In the plugin's settings (`/config` in a terminal session):
+
+- **Start collapsed** (on): show the panel as one line until you expand it.
+- **Show forecast** (on).
+- **On-pace band** (5): how many points either side of the time marker still count as on pace (yellow).
+
 Prices are read from Anthropic's [pricing page](https://platform.claude.com/docs/en/about-claude/pricing) and refreshed in the background, so new models are priced and compared as soon as they are listed. The panel refreshes every 10 seconds.
 
 ## Good to know

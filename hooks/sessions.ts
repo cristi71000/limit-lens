@@ -11,6 +11,32 @@ type Log = { offset: number; size: number }
 /** One response from the logs, and the session it belongs to. */
 type Response = { request: RequestUsage; owner: string }
 
+/** What a session's log says about it: its title as last set, and the folder it runs in. */
+export type SessionInfo = { title?: string; cwd?: string }
+
+/** A session's work in a window, at the table's rates, with what its log says about it. */
+export type SessionWork = SessionInfo & { owner: string; cost: number; isOwn: boolean }
+
+/**
+ * What a log line says about its session: a title the session was given
+ * (`custom-title` rows), and the folder it runs in (`cwd`, on most rows).
+ */
+export const parseLogMeta = (line: string): SessionInfo | null => {
+  if (!line.includes('"customTitle"') && !line.includes('"cwd"')) {
+    return null
+  }
+
+  try {
+    const row = JSON.parse(line) as { type?: string; customTitle?: unknown; cwd?: unknown }
+    const title = row.type === 'custom-title' && typeof row.customTitle === 'string' ? row.customTitle : undefined
+    const cwd = typeof row.cwd === 'string' ? row.cwd : undefined
+
+    return title || cwd ? { title, cwd } : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * One line of a session log, when it records a model's response: the logs
  * write a response once per content block, so `id` tells repeats apart.
@@ -74,6 +100,7 @@ export const parseLogLine = (line: string): { id: string; request: RequestUsage 
 export function makeScanner($: EngineInterface, projectsDir: string, ownId: string) {
   const logs = new Map<string, Log>()
   const responses = new Map<string, Response>()
+  const infos = new Map<string, SessionInfo>()
   const encoder = new TextEncoder()
 
   /** The text from `offset` on, up to a chunk; null when the file cannot be read. */
@@ -110,6 +137,14 @@ export function makeScanner($: EngineInterface, projectsDir: string, ownId: stri
       }
 
       for (const line of text.slice(0, end).split('\n')) {
+        // A subagent's log speaks for its session only through its responses; a folder is read once.
+        const wantsMeta = !path.includes('/subagents/') && (line.includes('"custom-title"') || !infos.get(owner)?.cwd)
+        const meta = wantsMeta ? parseLogMeta(line) : null
+        if (meta) {
+          const held = infos.get(owner) ?? {}
+          infos.set(owner, { title: meta.title ?? held.title, cwd: held.cwd ?? meta.cwd })
+        }
+
         const parsed = parseLogLine(line)
         const held = parsed && responses.get(parsed.id)
         if (parsed && (!held || (owner === ownId && held.owner !== ownId))) {
@@ -176,6 +211,21 @@ export function makeScanner($: EngineInterface, projectsDir: string, ownId: stri
     return { own, all }
   }
 
+  /** Each session's work since `from`, priciest first: this session's, and every other one on this machine. */
+  const workBySession = (models: Record<string, Price>, from: number): SessionWork[] => {
+    const costs = new Map<string, number>()
+    for (const { request, owner } of responses.values()) {
+      if (request.at >= from) {
+        costs.set(owner, (costs.get(owner) ?? 0) + (priceRequest(models, request.model, request) ?? 0))
+      }
+    }
+
+    return [...costs]
+      .filter(([, cost]) => cost > 0)
+      .map(([owner, cost]) => ({ owner, cost, isOwn: owner === ownId, ...infos.get(owner) }))
+      .sort((a, b) => b.cost - a.cost)
+  }
+
   /** Drops responses older than any window can ask about. */
   const forget = (before: number) => {
     for (const [id, { request }] of responses) {
@@ -185,5 +235,5 @@ export function makeScanner($: EngineInterface, projectsDir: string, ownId: stri
     }
   }
 
-  return { refresh, workSince, forget }
+  return { refresh, workSince, workBySession, forget }
 }

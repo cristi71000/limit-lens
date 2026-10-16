@@ -48,6 +48,15 @@ export type LimitTrack = {
   readAt: number
 }
 
+/** One session's or one project's part of a window: what its work cost, and whether this session is in it. */
+export type BreakdownRow = { name: string; cost: number; isOwn: boolean }
+
+/** The details pane's lists, priciest first, each with the window's account figure to share out. */
+export type Breakdown = {
+  sessions: BreakdownRow[]
+  projects: BreakdownRow[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'limit-lens': {
@@ -58,6 +67,10 @@ declare module 'claude-code' {
       limits: LimitTrack[]
       /** This session's share of each window's work on this machine, by window kind, once the logs are read. */
       shares: Record<string, number>
+      /** Whether the panel is expanded; null until the person toggles it, when the settings decide. */
+      expanded: boolean | null
+      /** Every local session's work in the 5-hour window, and every project's in the week, for the details pane. */
+      breakdown: Breakdown
     }
   }
 }

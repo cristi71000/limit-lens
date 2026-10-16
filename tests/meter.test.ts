@@ -36,6 +36,9 @@ test('labels models and money', async () => {
 
 const NOW = Date.parse('2026-10-16T12:00:00Z')
 
+/** The panel drawn expanded, as a person who turned off "Start collapsed" sees it. */
+const EXPANDED = { options: { startCollapsed: false } } as const
+
 type Drawing = { find: (query: { key: string }) => Promise<{ text: string } | undefined> }
 const textOf = async (ui: Drawing, key: string) => (await ui.find({ key }))?.text
 
@@ -62,7 +65,7 @@ const noOtherSessions = (on: On) => {
   on('fs.list', async () => ({ value: [] }))
 }
 
-test('the band shows the cost and each model that answered', async ($, on) => {
+test('the band shows the cost and each model that answered', EXPANDED, async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
@@ -99,7 +102,7 @@ test('the band shows the cost and each model that answered', async ($, on) => {
   }
 })
 
-test('before any request the band shows the current model', async ($, on) => {
+test('before any request the band shows the current model', EXPANDED, async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-sonnet-5-5' }))
 
@@ -109,7 +112,7 @@ test('before any request the band shows the current model', async ($, on) => {
   await ui.unmount()
 })
 
-test('on a subscription the band shows the limits and each tier projected draw', async ($, on) => {
+test('on a subscription the band shows the limits and each tier projected draw', EXPANDED, async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
@@ -144,7 +147,7 @@ test('on a subscription the band shows the limits and each tier projected draw',
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'limit-lens', surface, ...BAND })
-    expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets in')
+    expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets inForecast')
     // No session logs have been read in this test: the share is not known yet.
     expect([await textOf(ui, 'session-five_hour'), await textOf(ui, 'session-seven_day')]).toEqual(['—', '—'])
     // 2h 50m of 5h gone by (57%) and 3d 20h of a week (55%) both fall in the sixth of ten cells.
@@ -175,7 +178,7 @@ test('on a subscription the band shows the limits and each tier projected draw',
   }
 })
 
-test('limit readings count even when no window moved a whole point', async ($, on) => {
+test('limit readings count even when no window moved a whole point', EXPANDED, async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
@@ -229,7 +232,7 @@ const answerSteps = (on: On) => {
   })
 }
 
-test('a model without a price is left out of the comparison, and the band says so', async ($, on) => {
+test('a model without a price is left out of the comparison, and the band says so', EXPANDED, async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-6' }))
   answerSteps(on)
@@ -249,7 +252,7 @@ test('a model without a price is left out of the comparison, and the band says s
   await ui.unmount()
 })
 
-test('prices are fetched in the background and a new model joins the comparison', async ($, on) => {
+test('prices are fetched in the background and a new model joins the comparison', EXPANDED, async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   const fetched: string[] = []
@@ -297,7 +300,7 @@ test('prices are fetched in the background and a new model joins the comparison'
   expect(fetched.length).toBe(1)
 })
 
-test('every 10 seconds the band re-reads the figures and its countdown moves, with no request', async ($, on) => {
+test('every 10 seconds the band re-reads the figures and its countdown moves, with no request', EXPANDED, async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   const fiveHour = 20
@@ -380,7 +383,7 @@ const fakeMachine = (on: On, logs: Record<string, string>) => {
 const logLine = (id: string, msAgo: number) =>
   `${JSON.stringify({ type: 'assistant', timestamp: new Date(NOW - msAgo).toISOString(), message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n`
 
-test("this session's share is its part of all local work in the window, so sessions add up to the account", async ($, on) => {
+test("this session's share is its part of all local work in the window, so sessions add up to the account", EXPANDED, async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
@@ -424,4 +427,131 @@ test("this session's share is its part of all local work in the window, so sessi
   // The week also holds the other session's response from two hours ago: 3 of 7, of 40%.
   expect(await textOf(ui, 'session-seven_day')).toBe('17.1%')
   await ui.unmount()
+})
+
+const subscriptionReadings = (fiveHour: number) => [
+  { kind: 'five_hour', percentUsed: fiveHour, resetsAt: '2026-10-16T14:10:00Z' },
+  { kind: 'seven_day', percentUsed: 40.6, resetsAt: '2026-10-19T16:00:00Z' },
+]
+
+test('the panel starts as one line, expands and collapses, and opens the details pane', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+  answerSteps(on)
+  const opened: string[] = []
+  on('ui.open', async (_$, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true as const } }
+  })
+  await $.session.measure({ context: { window: 200000 } as never, rateLimits: subscriptionReadings(23), cost: { usd: 0.1 }, changed: ['rateLimits'] })
+
+  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+  // 23% used with 57% of the 5 hours gone: on course for 41%. The week, 40.6% at 55%: 74%.
+  // Each window a row, its parts in columns that line up.
+  const row = async (kind: string) =>
+    Promise.all(['label', 'meter', 'session', 'forecast'].map(part => textOf(ui, `compact-${part}-${kind}`)))
+  expect(await row('five_hour')).toEqual(['◆ 5h', '██░░░┃░░░░ 23%', 'this session —', '≈41% at reset'])
+  expect(await row('seven_day')).toEqual(['  week', '████░┃░░░░ 40.6%', 'this session —', '≈74% at reset'])
+  expect(await ui.find({ key: 'limits' })).toBeUndefined()
+  // The toggle is a down arrow while collapsed and an up arrow once open, in the top-right corner:
+  // the last element of the panel's top row.
+  const corner = async () => {
+    const [root] = (await ui.findAll({} as never)) as { children?: { props?: { key?: string } }[] }[]
+
+    return root?.children?.[root.children.length - 1]?.props?.key
+  }
+  expect(await textOf(ui, 'toggle')).toBe('⌄')
+  expect(await corner()).toBe('corner')
+
+  await ui.press({ key: 'toggle' })
+  expect(await ui.find({ key: 'limits' })).toBeDefined()
+  expect(await textOf(ui, 'toggle')).toBe('⌃')
+  // No keyboard shortcut, so no letter drawn beside it.
+  expect(((await ui.find({ key: 'toggle' })) as { props?: { hotkey?: string } } | undefined)?.props?.hotkey).toBeUndefined()
+  expect(await corner()).toBe('corner')
+  expect([await textOf(ui, 'forecast-five_hour'), await textOf(ui, 'forecast-seven_day')]).toEqual(['≈41% at reset', '≈74% at reset'])
+  await ui.press({ key: 'toggle' })
+  expect(await ui.find({ key: 'limits' })).toBeUndefined()
+
+  await ui.press({ key: 'details' })
+  expect(opened).toEqual(['limit-lens'])
+  await ui.unmount()
+
+  // On the desktop the one line carries the drawn meter in place of the cells.
+  const desktop = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
+  expect(await textOf(desktop, 'compact-meter-five_hour')).toBe(' 23%')
+  expect(await textOf(desktop, 'compact-forecast-five_hour')).toBe('≈41% at reset')
+  expect(await desktop.find({ type: 'Svg' } as never)).toBeDefined()
+  await desktop.unmount()
+})
+
+test(
+  'the settings set the on-pace band and turn the forecast off',
+  { options: { startCollapsed: false, paceBand: 2, showForecast: false } },
+  async ($, on) => {
+    mock.clock(on, { now: NOW })
+    on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+    answerSteps(on)
+    // 60% used with 57% of the window gone: 3 points ahead, past a 2-point band.
+    await $.session.measure({ context: { window: 200000 } as never, rateLimits: subscriptionReadings(60), cost: { usd: 0.1 }, changed: ['rateLimits'] })
+
+    const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+    const color = ((await ui.find({ type: 'Text', text: ' 60%' } as never)) as { props?: { color?: string } } | undefined)?.props?.color
+    expect(color).toBe('error')
+    expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets in')
+    await ui.unmount()
+  },
+)
+
+test('the details pane shows sessions, projects, the cache and the context window', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
+  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: PRICING_PAGE } }))
+  answerSteps(on)
+  const minute = 60_000
+  const meta = (row: object) => `${JSON.stringify(row)}\n`
+  fakeMachine(on, {
+    'me.jsonl': meta({ type: 'user', cwd: '/x/claudemod' }) + logLine('m1', 50 * minute) + logLine('m2', 10 * minute),
+    'me/subagents/agent-1.jsonl': logLine('s1', 30 * minute),
+    'other.jsonl':
+      meta({ type: 'custom-title', customTitle: 'Game issue', cwd: '/x/fabricam' }) +
+      logLine('o0', 120 * minute) +
+      logLine('o1', 40 * minute) +
+      logLine('o2', 20 * minute) +
+      logLine('o3', 1 * minute) +
+      logLine('o4', 2 * minute),
+  })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.usage', async () => ({
+    value: {
+      startedAt: NOW,
+      context: { window: 1_000_000, tokens: 620_000, percent: 62 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 7, resetsAt: new Date(NOW + 4 * 60 * minute).toISOString() },
+        { kind: 'seven_day', percentUsed: 40, resetsAt: new Date(NOW + 3 * 24 * 60 * minute).toISOString() },
+      ],
+    },
+  }))
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: true })
+  await clock.advance(10_000)
+
+  const pane = await $.ui.mount({
+    plugin: 'limit-lens',
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'limit-lens',
+    props: { title: 'Limits', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  })
+  // The 5 hours: Game issue did 4 of 7 responses, this session 3, of the account's 7%.
+  expect([await textOf(pane, 'sessions-name-0'), await textOf(pane, 'sessions-value-0')]).toEqual(['○ Game issue', '4%'])
+  expect([await textOf(pane, 'sessions-name-1'), await textOf(pane, 'sessions-value-1')]).toEqual(['● claudemod session', '3%'])
+  // The week adds Game issue's response from two hours ago: 5 of 8 to fabricam, of 40%.
+  expect([await textOf(pane, 'projects-name-0'), await textOf(pane, 'projects-value-0')]).toEqual(['○ fabricam', '25%'])
+  expect([await textOf(pane, 'projects-name-1'), await textOf(pane, 'projects-value-1')]).toEqual(['● claudemod', '15%'])
+  expect(await textOf(pane, 'context')).toBe('62% full: 620k of 1000k tokens')
+  expect(await textOf(pane, 'cache-none')).toBe('No requests yet')
+  await pane.unmount()
 })
