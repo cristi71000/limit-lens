@@ -7,8 +7,13 @@ import {
   formatDuration,
   formatPercent,
   formatResetIn,
-  levelColor,
+  elapsedFraction,
+  meterRuns,
+  meterSvg,
+  METER_SIZE,
+  paceColor,
   sessionDraw,
+  isCurrentTick,
   settleTick,
   trackedFor,
   trackLimits,
@@ -47,9 +52,9 @@ const SETTLE_MS = 5000
 const takeReadings = async ($: EngineInterface, readings: Parameters<typeof trackLimits>[1], now: number) => {
   const { tracks, ticks: rises } = trackLimits(await read($, limits), readings, now)
   await update($, limits, () => tracks)
-  if (rises.length > 0) {
-    await update($, ticks, held => [...held, ...rises])
-  }
+  // Rises still waiting from a window that has since reset no longer count.
+  const isCurrent = (tick: LimitTick) => tracks.some(t => isCurrentTick(t, tick)) || !tracks.some(t => t.kind === tick.kind)
+  await update($, ticks, held => [...held.filter(isCurrent), ...rises])
 }
 
 /** What this session's own requests answered from `from` to `to` cost at the table's rates. */
@@ -209,12 +214,13 @@ export const register: Register = on => {
         const table = await read($, prices)
         const own = await read($, requests)
 
-        let tracks = await read($, limits)
-        for (const tick of ready) {
+        const shares = ready.map(tick => {
           const others = isRead ? scanner.costBetween(table.models, tick.from, tick.to) : null
-          tracks = settleTick(tracks, tick, shareOf(ownCost(own, table, tick.from, tick.to), others))
-        }
-        await update($, limits, () => tracks)
+
+          return { tick, share: shareOf(ownCost(own, table, tick.from, tick.to), others) }
+        })
+        // Applied to the tracks as they stand now: readings that came in during the scan are kept.
+        await update($, limits, current => shares.reduce((tracks, { tick, share }) => settleTick(tracks, tick, share), current))
         const isSame = (a: LimitTick, b: LimitTick) =>
           a.kind === b.kind && a.from === b.from && a.to === b.to && a.points === b.points
         await update($, ticks, held => held.filter(t => !ready.some(r => isSame(r, t))))
@@ -268,7 +274,10 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Box, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text } = elements
+    // Only the remote surfaces (the desktop, the editor, mobile) have Svg; the terminal does not.
+    const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
     const cost = await read($, usd)
     const used = await read($, models)
     const table$ = await read($, prices)
@@ -418,8 +427,8 @@ export const register: Register = on => {
         ]),
         ...windows.map(w => {
           const percent = w.track.percentUsed
-          const filled = Math.min(METER_CELLS, Math.round((percent / 100) * METER_CELLS))
-          const color = levelColor(percent)
+          const elapsed = elapsedFraction(w.track.resetsAt, w.lengthMs, now)
+          const color = paceColor(percent, elapsed)
 
           return column(`limits-${w.kind}`, [
             cell(`limits-head-${w.kind}`, header(w.label)),
@@ -432,12 +441,35 @@ export const register: Register = on => {
             cell(
               `account-${w.kind}`,
               [
-                <Text key="filled" color={color}>
-                  {'█'.repeat(filled)}
-                </Text>,
-                <Text key="empty" dimColor>
-                  {'░'.repeat(METER_CELLS - filled)}
-                </Text>,
+                // The marker stands for the time gone by; usage left of it is under pace. Where the
+                // surface draws SVG it is a thin drawn line; in the terminal it takes one cell's place.
+                ...(Svg
+                  ? [
+                      <Svg
+                        key="meter"
+                        source={meterSvg(percent, elapsed, color)}
+                        alt={`${formatPercent(percent)} used${
+                          elapsed === undefined ? '' : `, ${formatPercent(elapsed * 100)} of the window gone`
+                        }`}
+                        width={METER_SIZE.width}
+                        height={METER_SIZE.height}
+                      />,
+                    ]
+                  : meterRuns(percent, elapsed, METER_CELLS).map((run, i) =>
+                  run.kind === 'marker' ? (
+                    <Text key={`run-${i}`} bold color="text">
+                      {run.text}
+                    </Text>
+                  ) : run.kind === 'filled' ? (
+                    <Text key={`run-${i}`} color={color}>
+                      {run.text}
+                    </Text>
+                  ) : (
+                    <Text key={`run-${i}`} dimColor>
+                      {run.text}
+                    </Text>
+                  ),
+                )),
                 <Text key="percent" bold color={color}>{` ${formatPercent(percent)}`}</Text>,
               ],
             ),

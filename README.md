@@ -30,7 +30,7 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 
 ## What it shows
 
-- **Limits** (on a Pro or Max subscription): your account's 5-hour and weekly usage with time to reset, and this session's share of each. Each rise in your account's usage is split between this session and your other Claude Code sessions on the same machine, by each one's share of the work. Usage from elsewhere (claude.ai, another device) is not counted as this session's.
+- **Limits** (on a Pro or Max subscription): your account's 5-hour and weekly usage with time to reset, and this session's share of each. A `┃` on each meter marks how much of the window has gone by: usage more than 5 points under it shows green, within 5 either way yellow, more than 5 over red. Each rise in your account's usage is split between this session and your other Claude Code sessions on the same machine, by each one's share of the work. Usage from elsewhere (claude.ai, another device) is not counted as this session's.
 - **If all on**: the same work priced on the newest Opus, Sonnet, Haiku and Fable models, as a share of each limit window. On API billing, the panel shows dollar cost instead.
 - **Models**: which models answered this session's requests, and how many each.
 

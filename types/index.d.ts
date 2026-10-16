@@ -51,13 +51,15 @@ export type LimitTrack = {
   readAt: number
   /** Points of the window put down to this session, from the rises split so far. */
   mine: number
+  /** How many times the window has reset while tracked; a rise counts only toward the window it happened in. */
+  epoch?: number
 }
 
 /**
  * A rise of the account's reading, waiting to be split between this session and
  * the others that ran from `from` to `to` (milliseconds).
  */
-export type LimitTick = { kind: string; points: number; from: number; to: number }
+export type LimitTick = { kind: string; points: number; from: number; to: number; epoch?: number }
 
 declare module 'claude-code' {
   interface PluginState {

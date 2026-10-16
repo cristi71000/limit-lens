@@ -146,8 +146,22 @@ test('on a subscription the band shows the limits and each tier projected draw',
     const ui = await $.ui.mount({ plugin: 'limit-lens', surface, ...BAND })
     expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets in')
     expect([await textOf(ui, 'session-five_hour'), await textOf(ui, 'session-seven_day')]).toEqual(['3%', '0.6%'])
-    expect(await textOf(ui, 'account-five_hour')).toBe(`${'█'.repeat(2)}${'░'.repeat(8)} 23%`)
-    expect(await textOf(ui, 'account-seven_day')).toBe(`${'█'.repeat(4)}${'░'.repeat(6)} 40.6%`)
+    // 2h 50m of 5h gone by (57%) and 3d 20h of a week (55%) both fall in the sixth of ten cells.
+    if (surface === 'terminal') {
+      expect(await textOf(ui, 'account-five_hour')).toBe(`██░░░┃░░░░ 23%`)
+      expect(await textOf(ui, 'account-seven_day')).toBe(`████░┃░░░░ 40.6%`)
+    } else {
+      // Drawn: the marker line at 57% of 104 pixels, the fill at 23%.
+      const svg = (await ui.find({ type: 'Svg' } as never)) as { props?: { source?: string; alt?: string } } | undefined
+      expect(svg?.props?.source).toContain('<rect x="57.9"')
+      expect(svg?.props?.source).toContain('width="23.9" height="10"')
+      expect(svg?.props?.alt).toBe('23% used, 56.7% of the window gone')
+    }
+    // 23% used with 57% of the window gone, and 40.6% with 55%: both well under pace.
+    const colorOf = async (text: string) =>
+      ((await ui.find({ type: 'Text', text } as never)) as { props?: { color?: string } } | undefined)?.props?.color
+    expect(await colorOf(' 23%')).toBe('success')
+    expect(await colorOf(' 40.6%')).toBe('success')
     expect([await textOf(ui, 'reset-five_hour'), await textOf(ui, 'reset-seven_day')]).toEqual(['2h 10m', '3d 4h'])
     expect(await textOf(ui, 'models')).toBe(`Models  ${BARS}   ● Opus 5.5 2 req   ○ Haiku 5.5 1 req`)
     expect(await whatIf(ui, 2)).toEqual([
@@ -415,5 +429,31 @@ test("a rise is split with the machine's other sessions by their share of the wo
 
   // The other log was read from the start once, then only from where it stopped; this session's never.
   expect(reads).toEqual([`other.jsonl@0`, `other.jsonl@${(entry('msg_a', 1000) + entry('msg_a', 1000)).length}`])
+  await ui.unmount()
+})
+
+test('across a reset the band never shows the session above the account', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+  answerSteps(on)
+  const measure = (fiveHour: number) =>
+    $.session.measure({
+      context: { window: 200000 } as never,
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: fiveHour },
+        { kind: 'seven_day', percentUsed: 40 },
+      ],
+      cost: { usd: 0.1 },
+      changed: ['cost'],
+    })
+
+  await measure(90)
+  await measure(95)
+  // The 5-hour window resets: the account is at 2%, and so, at most, is this session.
+  await measure(2)
+
+  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+  expect(await textOf(ui, 'session-five_hour')).toBe('2%')
+  expect(await textOf(ui, 'account-five_hour')).toContain(' 2%')
   await ui.unmount()
 })
