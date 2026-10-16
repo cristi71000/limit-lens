@@ -52,7 +52,21 @@ Prices are read from Anthropic's [pricing page](https://platform.claude.com/docs
 
 - Claude Code reports your account's limit usage only with each model response, in whole percentages. The account figures can trail the app's own usage panel by a point or two, and the panel says how old they are.
 - The per-model comparison assumes your limits are drawn down in proportion to API prices. Anthropic does not publish how each model counts against them, so treat those figures as estimates.
-- Nothing in the panel makes model calls or uses your limits. It reads Claude Code's own figures, the logs of your local sessions, and the public pricing page.
+- Nothing in the panel makes model calls or uses your limits.
+
+## What it reads, runs and fetches
+
+Everything stays on your machine; limit-lens sends nothing anywhere.
+
+- **Claude Code's own figures**: this session's token usage, model and the limit readings Claude Code reports with each response.
+- **Your local session logs**: the files under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), read for each response's token counts and model, each session's title and the folder it ran in. This is how it splits the account's usage across your sessions and projects. Only those fields are kept; message text is never stored or shown.
+- **`tail`**: runs `tail -c +N <log>` to read only the part of each log that is new since the last check, every 10 seconds.
+- **One web page**: a plain GET of Anthropic's public pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`, once every 12 hours, or every 30 minutes while a model you use is not yet priced. Nothing is sent with it.
+- **Stored on your machine**: the last prices it read, in the plugin's own store, so new sessions start priced.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
 
 ## Development
 
