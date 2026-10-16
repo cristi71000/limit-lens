@@ -66,6 +66,8 @@ Everything stays on your machine. limit-lens sends no data anywhere: its one net
 - **Stored on your machine**: the last prices it read, in the plugin's own store, so new sessions start priced.
 - **The `/limits` command**: limit-lens adds `/limits` and answers it itself by opening its Details pane. It does not see or change any other command.
 
+Privacy policy: [PRIVACY.md](PRIVACY.md).
+
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
