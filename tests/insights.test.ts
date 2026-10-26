@@ -50,6 +50,30 @@ test('the details pane lists sessions by name and the week by project folder', a
   ])
 })
 
+test('projects are told apart by their whole folder, and named with as much of it as it takes', async () => {
+  const work = (owner: string, cwd: string, cost: number, isOwn = false) => ({ owner, cost, cwd, isOwn })
+  const parts = toBreakdown(
+    [work('a', '/home/u/work/api', 1), work('b', '/home/u/personal/api', 1)],
+    [
+      work('a', '/home/u/work/api', 4),
+      // The same folder spelled with a trailing slash is the same project.
+      work('a2', '/home/u/work/api/', 1),
+      work('b', '/home/u/personal/api', 2, true),
+      work('c', '/home/u/site', 1),
+      // A folder whose parent shares a name with the one above still gets a name of its own.
+      work('d', '/srv/work/api', 1),
+    ],
+  )
+  expect(parts.projects).toEqual([
+    { name: 'u/work/api', cost: 5, isOwn: false },
+    { name: 'personal/api', cost: 2, isOwn: true },
+    { name: 'site', cost: 1, isOwn: false },
+    { name: 'srv/work/api', cost: 1, isOwn: false },
+  ])
+  // A session with no title is named by its folder the same way.
+  expect(parts.sessions.map(s => s.name)).toEqual(['u/work/api session', 'personal/api session'])
+})
+
 test('cache health: the hit rate, and what full re-reads in the last hour cost over cache hits', async () => {
   const now = 10 * 60 * 60_000
   const at = (minutesAgo: number) => now - minutesAgo * 60_000

@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { formatUsd, modelLabel } from '../hooks/register'
 import { PRICING_PAGE } from './pricing-page'
@@ -15,6 +16,16 @@ const BAND = {
     view: {},
   },
 } as const
+
+/**
+ * What sits beneath limit-lens in the band in a session (the engine, other plugins), answered here
+ * as drawing nothing: an empty box. A test registers it first, as hooks beneath come before any call.
+ */
+const nothingBeneath = (on: On) =>
+  on('ui.render', { component: 'AbovePrompt' }, async () => ({ type: 'Box', props: {}, children: [] }) as never)
+
+/** The band as a session mounts it. */
+const mountBand = ($: Engine, surface: 'terminal' | 'desktop') => $.ui.mount({ plugin: 'limit-lens', surface, ...BAND })
 
 const usage = (model: string) => ({
   model,
@@ -66,6 +77,7 @@ const noOtherSessions = (on: On) => {
 }
 
 test('the band shows the cost and each model that answered', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
@@ -94,7 +106,7 @@ test('the band shows the cost and each model that answered', EXPANDED, async ($,
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'limit-lens', surface, ...BAND })
+    const ui = await mountBand($, surface)
     expect(await textOf(ui, 'session-cost')).toBe('$0.42')
     expect(await textOf(ui, 'models')).toBe(`Models  ${BARS}   ● Opus 5.5 2 req   ○ Haiku 5.5 1 req`)
     expect(await whatIf(ui, 1)).toEqual([['$1.56'], ['$0.62'], ['$0.31'], ['$0.02']])
@@ -103,16 +115,18 @@ test('the band shows the cost and each model that answered', EXPANDED, async ($,
 })
 
 test('before any request the band shows the current model', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-sonnet-5-5' }))
 
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+  const ui = await mountBand($, 'terminal')
   expect(await ui.find({ type: 'Text', text: 'Sonnet 5.5' })).toBeDefined()
   expect(await whatIf(ui, 1)).toEqual([['—'], ['—'], ['—'], ['—']])
   await ui.unmount()
 })
 
 test('on a subscription the band shows the limits and each tier projected draw', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
@@ -146,7 +160,7 @@ test('on a subscription the band shows the limits and each tier projected draw',
   await measure(23, 40.6)
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'limit-lens', surface, ...BAND })
+    const ui = await mountBand($, surface)
     expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets inForecast')
     // No session logs have been read in this test: the share is not known yet.
     expect([await textOf(ui, 'session-five_hour'), await textOf(ui, 'session-seven_day')]).toEqual(['—', '—'])
@@ -179,6 +193,7 @@ test('on a subscription the band shows the limits and each tier projected draw',
 })
 
 test('limit readings count even when no window moved a whole point', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
@@ -212,7 +227,7 @@ test('limit readings count even when no window moved a whole point', EXPANDED, a
   // The engine flags rateLimits only on a whole-point move; these readings move less.
   await measure(20.4, 40.1, ['cost'])
 
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
+  const ui = await mountBand($, 'desktop')
   expect(await ui.find({ type: 'Text', text: ' 20.4%' })).toBeDefined()
   expect(await textOf(ui, 'account-five_hour')).toContain(' 20.4%')
   await ui.unmount()
@@ -233,6 +248,7 @@ const answerSteps = (on: On) => {
 }
 
 test('a model without a price is left out of the comparison, and the band says so', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-6' }))
   answerSteps(on)
@@ -244,7 +260,7 @@ test('a model without a price is left out of the comparison, and the band says s
   }
   await $.session.measure({ context: { window: 200000 } as never, rateLimits: [], cost: { usd: 0.4213 }, changed: ['cost'] })
 
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
+  const ui = await mountBand($, 'desktop')
   expect(await textOf(ui, 'unpriced')).toBe('Opus 6 not priced yet: comparison covers 2 of 3 requests')
   // Priced from the two Opus 5.5 requests alone: Fable 2.5x, Sonnet 0.5x, Haiku 0.025x of them.
   expect(await whatIf(ui, 1)).toEqual([['$1.05'], ['$0.42'], ['$0.21'], ['$0.01']])
@@ -253,6 +269,7 @@ test('a model without a price is left out of the comparison, and the band says s
 })
 
 test('prices are fetched in the background and a new model joins the comparison', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   const fetched: string[] = []
@@ -283,7 +300,7 @@ test('prices are fetched in the background and a new model joins the comparison'
   }
   await $.session.measure({ context: { window: 200000 } as never, rateLimits: [], cost: { usd: 0.5 }, changed: ['cost'] })
 
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
+  const ui = await mountBand($, 'desktop')
   expect(await textOf(ui, 'unpriced')).toBeUndefined()
   expect(await textOf(ui, 'what-if-name-opus-6')).toBe('● Opus 6')
   // Opus 6 ran it all: Fable 2x its price, Sonnet 0.4x, Haiku 0.02x (a hair under a cent, so shown to four places).
@@ -301,6 +318,7 @@ test('prices are fetched in the background and a new model joins the comparison'
 })
 
 test('every 10 seconds the band re-reads the figures and its countdown moves, with no request', EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   const fiveHour = 20
@@ -331,7 +349,7 @@ test('every 10 seconds the band re-reads the figures and its countdown moves, wi
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: true })
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+  const ui = await mountBand($, 'terminal')
   expect(await textOf(ui, 'reset-five_hour')).toBe('2h 10m')
 
   // Ten minutes idle: the countdown has moved without any turn running.
@@ -384,6 +402,7 @@ const logLine = (id: string, msAgo: number) =>
   `${JSON.stringify({ type: 'assistant', timestamp: new Date(NOW - msAgo).toISOString(), message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n`
 
 test("this session's share is its part of all local work in the window, so sessions add up to the account", EXPANDED, async ($, on) => {
+  nothingBeneath(on)
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
@@ -419,7 +438,7 @@ test("this session's share is its part of all local work in the window, so sessi
   }
   await clock.advance(10_000)
 
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+  const ui = await mountBand($, 'terminal')
   // On Fable the same work would cost 2.5 times as much: 7.5% of the 5 hours, 42.9% of the week.
   expect((await whatIf(ui, 2))[0]).toEqual(['7.5%', '42.9%'])
   // 5 hours: three of six responses in the window are this session's, half of 6%.
@@ -434,7 +453,58 @@ const subscriptionReadings = (fiveHour: number) => [
   { kind: 'seven_day', percentUsed: 40.6, resetsAt: '2026-10-19T16:00:00Z' },
 ]
 
+/** Another plugin's line in the band, beneath limit-lens. */
+const neighbour = (on: On) =>
+  on('ui.render', { component: 'AbovePrompt' }, async () => ({ type: 'Text', props: {}, children: ['neighbour band'] }) as never)
+
+type Tree = { type?: string; text?: string; children?: Tree[]; props?: { key?: string } }
+
+/** The band's top-level parts, in order: limit-lens's panel, then what the others drew. */
+const parts = async (ui: { findAll: (query: never) => Promise<unknown[]> }) => {
+  const [root] = (await ui.findAll({} as never)) as Tree[]
+
+  return (root?.children ?? []).map(child => child.props?.key)
+}
+
+test("the band keeps what other plugins draw there, collapsed and expanded, on every surface", async ($, on) => {
+  neighbour(on)
+  mock.clock(on, { now: NOW })
+  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+  answerSteps(on)
+  await $.session.measure({ context: { window: 200000 } as never, rateLimits: subscriptionReadings(23), cost: { usd: 0.1 }, changed: ['rateLimits'] })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await mountBand($, surface)
+    // Collapsed: the limits line, and the other plugin's line below it.
+    expect(await ui.find({ key: 'compact-label-five_hour' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'neighbour band' } as never)).toBeDefined()
+    expect(await parts(ui)).toEqual(['limit-lens', 'others'])
+
+    await ui.press({ key: 'toggle' })
+    expect(await ui.find({ key: 'limits' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'neighbour band' } as never)).toBeDefined()
+    await ui.press({ key: 'toggle' })
+    await ui.unmount()
+  }
+})
+
+test('on API billing the cost line keeps what other plugins draw there too', async ($, on) => {
+  neighbour(on)
+  mock.clock(on, { now: NOW })
+  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+  answerSteps(on)
+  await $.session.measure({ context: { window: 200000 } as never, rateLimits: [], cost: { usd: 0.1 }, changed: ['cost'] })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await mountBand($, surface)
+    expect(await ui.find({ key: 'compact' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'neighbour band' } as never)).toBeDefined()
+    await ui.unmount()
+  }
+})
+
 test('the panel starts as one line, expands and collapses, and opens the details pane', async ($, on) => {
+  nothingBeneath(on)
   mock.clock(on, { now: NOW })
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
   answerSteps(on)
@@ -446,7 +516,7 @@ test('the panel starts as one line, expands and collapses, and opens the details
   })
   await $.session.measure({ context: { window: 200000 } as never, rateLimits: subscriptionReadings(23), cost: { usd: 0.1 }, changed: ['rateLimits'] })
 
-  const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+  const ui = await mountBand($, 'terminal')
   // 23% used with 57% of the 5 hours gone: on course for 41%. The week, 40.6% at 55%: 74%.
   // Each window a row, its parts in columns that line up.
   const row = async (kind: string) =>
@@ -456,10 +526,12 @@ test('the panel starts as one line, expands and collapses, and opens the details
   expect(await ui.find({ key: 'limits' })).toBeUndefined()
   // The toggle is a down arrow while collapsed and an up arrow once open, in the top-right corner:
   // the last element of the panel's top row.
+  type Node = { children?: Node[]; props?: { key?: string } }
   const corner = async () => {
-    const [root] = (await ui.findAll({} as never)) as { children?: { props?: { key?: string } }[] }[]
+    const panel = (await ui.find({ key: 'limit-lens' })) as Node | undefined
+    const top = panel?.children?.[0]
 
-    return root?.children?.[root.children.length - 1]?.props?.key
+    return top?.children?.[top.children.length - 1]?.props?.key
   }
   expect(await textOf(ui, 'toggle')).toBe('⌄')
   expect(await corner()).toBe('corner')
@@ -479,7 +551,7 @@ test('the panel starts as one line, expands and collapses, and opens the details
   await ui.unmount()
 
   // On the desktop the one line carries the drawn meter in place of the cells.
-  const desktop = await $.ui.mount({ plugin: 'limit-lens', surface: 'desktop', ...BAND })
+  const desktop = await mountBand($, 'desktop')
   expect(await textOf(desktop, 'compact-meter-five_hour')).toBe(' 23%')
   expect(await textOf(desktop, 'compact-forecast-five_hour')).toBe('≈41% at reset')
   expect(await desktop.find({ type: 'Svg' } as never)).toBeDefined()
@@ -490,13 +562,14 @@ test(
   'the settings set the on-pace band and turn the forecast off',
   { options: { startCollapsed: false, paceBand: 2, showForecast: false } },
   async ($, on) => {
+  nothingBeneath(on)
     mock.clock(on, { now: NOW })
     on('session.model', async () => ({ value: 'claude-opus-5-5' }))
     answerSteps(on)
     // 60% used with 57% of the window gone: 3 points ahead, past a 2-point band.
     await $.session.measure({ context: { window: 200000 } as never, rateLimits: subscriptionReadings(60), cost: { usd: 0.1 }, changed: ['rateLimits'] })
 
-    const ui = await $.ui.mount({ plugin: 'limit-lens', surface: 'terminal', ...BAND })
+    const ui = await mountBand($, 'terminal')
     const color = ((await ui.find({ type: 'Text', text: ' 60%' } as never)) as { props?: { color?: string } } | undefined)?.props?.color
     expect(color).toBe('error')
     expect(await textOf(ui, 'limits-labels')).toBe('◆ LimitsThis sessionAccountResets in')

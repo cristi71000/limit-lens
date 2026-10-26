@@ -6,7 +6,11 @@ import { priceRequest } from './pricing'
 /** How much of a log one read takes; the rest is read on the next pass. */
 const CHUNK_BYTES = 4_000_000
 
-type Log = { offset: number; size: number }
+/**
+ * Where a log has been read to. `isSkipping` while the reader is inside a row longer than one read:
+ * such rows hold pasted or tool content, never a response's usage, so they are passed over whole.
+ */
+type Log = { offset: number; size: number; isSkipping: boolean }
 
 /** One response from the logs, and the session it belongs to. */
 type Response = { request: RequestUsage; owner: string }
@@ -126,12 +130,13 @@ export const makeScanner = (access: LogAccess, projectsDir: string, ownId: strin
 
   /** Reads what the log added since the last pass; false when it could not be read. */
   const readLog = async (path: string, size: number, owner: string): Promise<boolean> => {
-    const log = logs.get(path) ?? { offset: 0, size: 0 }
+    const log = logs.get(path) ?? { offset: 0, size: 0, isSkipping: false }
     logs.set(path, log)
 
     if (size < log.offset) {
       // Rewritten from the start: read it afresh.
       log.offset = 0
+      log.isSkipping = false
     }
 
     while (log.offset < size) {
@@ -141,12 +146,51 @@ export const makeScanner = (access: LogAccess, projectsDir: string, ownId: strin
         return false
       }
 
-      const end = text.lastIndexOf('\n')
-      if (end < 0) {
+      const read = encoder.encode(text).length
+      if (read === 0) {
         break
       }
+      // The read stopped short of the end the listing saw: the log goes on past it.
+      const goesOn = log.offset + read < size
 
-      for (const line of text.slice(0, end).split('\n')) {
+      // Inside an over-long row: pass over the rest of it, up to its newline.
+      let from = 0
+      if (log.isSkipping) {
+        const stop = text.indexOf('\n')
+        if (stop < 0) {
+          // All of it is the over-long row: none of it needs reading again.
+          log.offset += read
+          if (!goesOn) {
+            break
+          }
+          continue
+        }
+        from = stop + 1
+        log.isSkipping = false
+      }
+
+      const end = text.lastIndexOf('\n')
+      if (end < from) {
+        // No whole row after `from`. One that starts later in this read is read again from its start.
+        const head = encoder.encode(text.slice(0, from)).length
+        if (head > 0) {
+          log.offset += head
+          if (goesOn) {
+            continue
+          }
+          break
+        }
+        // One still being written waits for the next pass; one that fills a whole read is longer
+        // than a read can take, and is passed over.
+        if (!goesOn) {
+          break
+        }
+        log.offset += read
+        log.isSkipping = true
+        continue
+      }
+
+      for (const line of text.slice(from, end).split('\n')) {
         // A subagent's log speaks for its session only through its responses; a folder is read once.
         const wantsMeta = !path.includes('/subagents/') && (line.includes('"custom-title"') || !infos.get(owner)?.cwd)
         const meta = wantsMeta ? parseLogMeta(line) : null
@@ -161,7 +205,7 @@ export const makeScanner = (access: LogAccess, projectsDir: string, ownId: strin
           responses.set(parsed.id, { request: parsed.request, owner })
         }
       }
-      // Only whole lines are taken; a line still being written waits for the next pass.
+      // Only whole rows are taken; a row still being written waits for the next pass.
       log.offset += encoder.encode(text.slice(0, end + 1)).length
     }
     log.size = size

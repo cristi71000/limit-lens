@@ -54,17 +54,49 @@ const breakdown = atom({ plugin: 'limit-lens', key: 'breakdown' } as const, { se
 const PANE = 'limit-lens'
 const COMMAND = 'limits'
 
-/** A session as the details pane names it: its title, else its folder's name, else the start of its id. */
-const sessionName = (work: SessionWork): string =>
-  work.title ?? (work.cwd ? `${work.cwd.split('/').pop()} session` : work.owner.slice(0, 8))
+/** A folder without a trailing slash, so the same folder is one key however a log spelled it. */
+const folderKey = (cwd: string): string => (cwd.length > 1 ? cwd.replace(/\/+$/, '') : cwd)
 
-/** Every session's work in the 5-hour window, and the week's grouped by project folder. */
+/**
+ * A short name for each folder: its own name, with as many parent folders as it takes to tell it
+ * apart from the others (`work/api`, `personal/api`), or the whole path where nothing shorter does.
+ */
+export const folderLabels = (folders: string[]): Map<string, string> => {
+  const parts = new Map(folders.map(folder => [folder, folder.split('/').filter(Boolean)]))
+  const tail = (segments: string[], depth: number) => segments.slice(-depth).join('/')
+  const labels = new Map<string, string>()
+  for (const [folder, segments] of parts) {
+    let depth = 1
+    const clashes = () =>
+      [...parts].some(([other, theirs]) => other !== folder && tail(theirs, depth) === tail(segments, depth))
+    while (depth < segments.length && clashes()) {
+      depth += 1
+    }
+    labels.set(folder, clashes() ? folder : tail(segments, depth) || folder)
+  }
+
+  return labels
+}
+
+/**
+ * Every session's work in the 5-hour window, and the week's grouped by project folder: by its whole
+ * path, so two projects that share a folder name stay apart, each named as `folderLabels` tells them.
+ */
 export const toBreakdown = (fiveHour: SessionWork[], week: SessionWork[]): Breakdown => {
+  const folders = [...new Set([...fiveHour, ...week].flatMap(work => (work.cwd ? [folderKey(work.cwd)] : [])))]
+  const labels = folderLabels(folders)
+  const labelOf = (cwd: string) => labels.get(folderKey(cwd)) ?? cwd
+
+  // A session as the details pane names it: its title, else its folder, else the start of its id.
+  const sessionName = (work: SessionWork): string =>
+    work.title ?? (work.cwd ? `${labelOf(work.cwd)} session` : work.owner.slice(0, 8))
+
   const projects = new Map<string, BreakdownRow>()
   for (const work of week) {
-    const name = work.cwd?.split('/').pop() ?? 'other'
-    const held = projects.get(name) ?? { name, cost: 0, isOwn: false }
-    projects.set(name, { name, cost: held.cost + work.cost, isOwn: held.isOwn || work.isOwn })
+    const key = work.cwd ? folderKey(work.cwd) : ''
+    const name = work.cwd ? labelOf(work.cwd) : 'other'
+    const held = projects.get(key) ?? { name, cost: 0, isOwn: false }
+    projects.set(key, { name, cost: held.cost + work.cost, isOwn: held.isOwn || work.isOwn })
   }
 
   return {
@@ -325,350 +357,361 @@ export const register: Register = (on, options) => {
 
     const elements = $.ui.resolve(e)
     const { Box, Button, Text } = elements
-    // Only the remote surfaces (the desktop, the editor, mobile) have Svg; the terminal does not.
-    const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
-    const cost = await read($, usd)
-    const used = await read($, models)
-    const table$ = await read($, prices)
-    const comparison = compare(await read($, requests), table$)
-    const candidates = table$.candidates
-    const tracked = await read($, limits)
-    const windows = WINDOWS.flatMap(w => {
-      const track = tracked.find(t => t.kind === w.kind)
+    // The band is shared: draw the panel and keep what other plugins and the engine draw there.
+    const others = await next(e)
+    const panelTree = await (async () => {
+      // Only the remote surfaces (the desktop, the editor, mobile) have Svg; the terminal does not.
+      const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
+      const cost = await read($, usd)
+      const used = await read($, models)
+      const table$ = await read($, prices)
+      const comparison = compare(await read($, requests), table$)
+      const candidates = table$.candidates
+      const tracked = await read($, limits)
+      const windows = WINDOWS.flatMap(w => {
+        const track = tracked.find(t => t.kind === w.kind)
 
-      return track ? [{ ...w, track }] : []
-    })
-    const isSubscription = windows.length > 0
-    const now = await $.clock.now()
-    const current = modelLabel(await $.session.model())
-    const shown: ModelTally[] = used.some(m => modelLabel(m.model) === current)
-      ? used
-      : [{ model: current, requests: 0 }, ...used]
-    const bar = shareBar(used, BAR_CELLS)
+        return track ? [{ ...w, track }] : []
+      })
+      const isSubscription = windows.length > 0
+      const now = await $.clock.now()
+      const current = modelLabel(await $.session.model())
+      const shown: ModelTally[] = used.some(m => modelLabel(m.model) === current)
+        ? used
+        : [{ model: current, requests: 0 }, ...used]
+      const bar = shareBar(used, BAR_CELLS)
 
-    // A table is a row of columns, so each column lines up whatever the font; every cell is one line.
-    const cell = (key: string, content: RenderChildren) => (
-      <Box key={key} flexDirection="row">
-        {content}
-      </Box>
-    )
-    const column = (key: string, cells: RenderChildren[]) => (
-      <Box key={key} flexDirection="column">
-        {cells}
-      </Box>
-    )
-    const table = (key: string, columns: RenderChildren[]) => (
-      <Box key={key} flexDirection="row" columnGap={2}>
-        {columns}
-      </Box>
-    )
-    const header = (text: string) => <Text dimColor>{text}</Text>
-    const label = (text: string) => <Text dimColor>{text}</Text>
+      // A table is a row of columns, so each column lines up whatever the font; every cell is one line.
+      const cell = (key: string, content: RenderChildren) => (
+        <Box key={key} flexDirection="row">
+          {content}
+        </Box>
+      )
+      const column = (key: string, cells: RenderChildren[]) => (
+        <Box key={key} flexDirection="column">
+          {cells}
+        </Box>
+      )
+      const table = (key: string, columns: RenderChildren[]) => (
+        <Box key={key} flexDirection="row" columnGap={2}>
+          {columns}
+        </Box>
+      )
+      const header = (text: string) => <Text dimColor>{text}</Text>
+      const label = (text: string) => <Text dimColor>{text}</Text>
 
-    const modelsRow = (
-      <Box key="models" flexDirection="row" flexWrap="wrap">
-        {label('Models  ')}
-        {bar.map(segment => (
-          <Text key={`bar-${segment.model}`} color={modelColor(segment.model)}>
-            {'█'.repeat(segment.cells)}
-          </Text>
-        ))}
-        {shown.map(m => {
-          const name = modelLabel(m.model)
-          const isCurrent = name === current
-          const color = modelColor(m.model)
-
-          return (
-            <Box key={`model-${m.model}`} flexDirection="row">
-              <Text>{'   '}</Text>
-              <Text color={color}>{isCurrent ? '● ' : '○ '}</Text>
-              <Text bold={isCurrent} color={color}>
-                {name}
-              </Text>
-              {m.requests > 0 ? <Text dimColor>{` ${m.requests} req`}</Text> : null}
-            </Box>
-          )
-        })}
-      </Box>
-    )
-
-    // One row per comparison model; `values` gives its cells, `undefined` until a request is priced.
-    const whatIfTable = (headers: string[], values: (i: number) => string[] | undefined) =>
-      table('what-if', [
-        column('what-if-names', [
-          cell('what-if-title', header('If all on')),
-          ...candidates.map(model => {
-            const name = modelLabel(model)
+      const modelsRow = (
+        <Box key="models" flexDirection="row" flexWrap="wrap">
+          {label('Models  ')}
+          {bar.map(segment => (
+            <Text key={`bar-${segment.model}`} color={modelColor(segment.model)}>
+              {'█'.repeat(segment.cells)}
+            </Text>
+          ))}
+          {shown.map(m => {
+            const name = modelLabel(m.model)
             const isCurrent = name === current
+            const color = modelColor(m.model)
 
-            return cell(
-              `what-if-name-${model}`,
-              [
-                <Text key="dot" color={modelColor(model)}>
-                  {isCurrent ? '● ' : '○ '}
-                </Text>,
-                <Text key="name" bold={isCurrent} color={modelColor(model)}>
+            return (
+              <Box key={`model-${m.model}`} flexDirection="row">
+                <Text>{'   '}</Text>
+                <Text color={color}>{isCurrent ? '● ' : '○ '}</Text>
+                <Text bold={isCurrent} color={color}>
                   {name}
-                </Text>,
-              ],
+                </Text>
+                {m.requests > 0 ? <Text dimColor>{` ${m.requests} req`}</Text> : null}
+              </Box>
             )
-          }),
-        ]),
-        ...headers.map((title, col) =>
-          column(`what-if-col-${col}`, [
-            cell(`what-if-head-${col}`, header(title)),
-            ...candidates.map((model, i) =>
-              cell(`what-if-${model}-${col}`, <Text>{values(i)?.[col] ?? '—'}</Text>),
-            ),
-          ]),
-        ),
-      ])
-
-    // Only when a model has no price yet: what the comparison leaves out for want of one.
-    const unpricedNames = comparison.unpriced.map(modelLabel)
-    const unpricedRow =
-      unpricedNames.length > 0 ? (
-        <Box key="unpriced" flexDirection="row" flexWrap="wrap">
-          <Text color="warning">
-            {`${unpricedNames.join(', ')} not priced yet: comparison covers ${comparison.priced} of ${
-              comparison.priced + comparison.unpricedCount
-            } requests`}
-          </Text>
+          })}
         </Box>
-      ) : null
-
-    // The controls: expand or collapse the panel, and open the details pane.
-    const isOpen = (await read($, expanded)) ?? !startCollapsed
-    // The panel's own control, in its top-right corner: ⌄ to expand it, ⌃ to collapse it.
-    const toggle = (
-      <Box key="corner">
-        <Button key="toggle" label={isOpen ? '⌃' : '⌄'} plain dimColor onPress={() => update($, expanded, () => !isOpen)} />
-      </Box>
-    )
-    const controls = (
-      <Box key="controls" flexDirection="row">
-        <Button key="details" label="Details" hotkey="d" dimColor onPress={() => void $.ui.open({ id: PANE, title: 'Limits' })} />
-      </Box>
-    )
-    /** The panel with the toggle in its top-right corner: the body takes the width the toggle leaves. */
-    const framed = (body: RenderChildren) => (
-      <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
-        <Box key="frame" flexGrow={1}>
-          {body}
-        </Box>
-        {toggle}
-      </Box>
-    )
-
-    const panel = (left: RenderChildren, right: RenderChildren) =>
-      framed(
-      <Box key="body" flexDirection="column">
-        <Box key="tables" flexDirection="row" flexWrap="wrap" columnGap={6}>
-          {left}
-          {right}
-        </Box>
-        <Box key="footer" flexDirection="row" flexWrap="wrap" columnGap={3} marginTop={1}>
-          {modelsRow}
-          {controls}
-        </Box>
-        {unpricedRow}
-      </Box>,
       )
 
-    const mark = [
-      <Text key="mark" color="claude">
-        ◆{' '}
-      </Text>,
-    ]
+      // One row per comparison model; `values` gives its cells, `undefined` until a request is priced.
+      const whatIfTable = (headers: string[], values: (i: number) => string[] | undefined) =>
+        table('what-if', [
+          column('what-if-names', [
+            cell('what-if-title', header('If all on')),
+            ...candidates.map(model => {
+              const name = modelLabel(model)
+              const isCurrent = name === current
 
-    if (isSubscription) {
-      const known = await read($, shares)
-      const draws = windows.map(w => sessionDraw(w.track, known[w.kind]))
-      // How old the account figure is: it only moves when this session hears back from the API.
-      const readAt = Math.max(...windows.map(w => w.track.readAt ?? w.track.since))
-      const readingAge = now - readAt >= 60_000 ? formatDuration(now - readAt) : undefined
-      const views = windows.map((w, i) => {
-        const percent = w.track.percentUsed
-        const elapsed = elapsedFraction(w.track.resetsAt, w.lengthMs, now)
-        const course = showForecast ? forecast(percent, elapsed, w.lengthMs) : undefined
-
-        return { ...w, percent, elapsed, color: paceColor(percent, elapsed, paceBand), draw: draws[i], course }
-      })
-
-      // The account's meter: the marker stands for the time gone by, so usage left of it is under pace.
-      // Where the surface draws SVG it is a thin drawn line; in the terminal it takes one cell's place.
-      const meter = (v: (typeof views)[number]): RenderChildren[] => [
-        ...(Svg
-          ? [
-              <Svg
-                key="meter"
-                source={meterSvg(v.percent, v.elapsed, v.color)}
-                alt={`${formatPercent(v.percent)} used${
-                  v.elapsed === undefined ? '' : `, ${formatPercent(v.elapsed * 100)} of the window gone`
-                }`}
-                width={METER_SIZE.width}
-                height={METER_SIZE.height}
-              />,
-            ]
-          : meterRuns(v.percent, v.elapsed, METER_CELLS).map((run, i) =>
-              run.kind === 'marker' ? (
-                <Text key={`run-${i}`} bold color="text">
-                  {run.text}
-                </Text>
-              ) : run.kind === 'filled' ? (
-                <Text key={`run-${i}`} color={v.color}>
-                  {run.text}
-                </Text>
-              ) : (
-                <Text key={`run-${i}`} dimColor>
-                  {run.text}
-                </Text>
+              return cell(
+                `what-if-name-${model}`,
+                [
+                  <Text key="dot" color={modelColor(model)}>
+                    {isCurrent ? '● ' : '○ '}
+                  </Text>,
+                  <Text key="name" bold={isCurrent} color={modelColor(model)}>
+                    {name}
+                  </Text>,
+                ],
+              )
+            }),
+          ]),
+          ...headers.map((title, col) =>
+            column(`what-if-col-${col}`, [
+              cell(`what-if-head-${col}`, header(title)),
+              ...candidates.map((model, i) =>
+                cell(`what-if-${model}-${col}`, <Text>{values(i)?.[col] ?? '—'}</Text>),
               ),
-            )),
-        <Text key="percent" bold color={v.color}>{` ${formatPercent(v.percent)}`}</Text>,
+            ]),
+          ),
+        ])
+
+      // Only when a model has no price yet: what the comparison leaves out for want of one.
+      const unpricedNames = comparison.unpriced.map(modelLabel)
+      const unpricedRow =
+        unpricedNames.length > 0 ? (
+          <Box key="unpriced" flexDirection="row" flexWrap="wrap">
+            <Text color="warning">
+              {`${unpricedNames.join(', ')} not priced yet: comparison covers ${comparison.priced} of ${
+                comparison.priced + comparison.unpricedCount
+              } requests`}
+            </Text>
+          </Box>
+        ) : null
+
+      // The controls: expand or collapse the panel, and open the details pane.
+      const isOpen = (await read($, expanded)) ?? !startCollapsed
+      // The panel's own control, in its top-right corner: ⌄ to expand it, ⌃ to collapse it.
+      const toggle = (
+        <Box key="corner">
+          <Button key="toggle" label={isOpen ? '⌃' : '⌄'} plain dimColor onPress={() => update($, expanded, () => !isOpen)} />
+        </Box>
+      )
+      const controls = (
+        <Box key="controls" flexDirection="row">
+          <Button key="details" label="Details" hotkey="d" dimColor onPress={() => void $.ui.open({ id: PANE, title: 'Limits' })} />
+        </Box>
+      )
+      /** The panel with the toggle in its top-right corner: the body takes the width the toggle leaves. */
+      const framed = (body: RenderChildren) => (
+        <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
+          <Box key="frame" flexGrow={1}>
+            {body}
+          </Box>
+          {toggle}
+        </Box>
+      )
+
+      const panel = (left: RenderChildren, right: RenderChildren) =>
+        framed(
+        <Box key="body" flexDirection="column">
+          <Box key="tables" flexDirection="row" flexWrap="wrap" columnGap={6}>
+            {left}
+            {right}
+          </Box>
+          <Box key="footer" flexDirection="row" flexWrap="wrap" columnGap={3} marginTop={1}>
+            {modelsRow}
+            {controls}
+          </Box>
+          {unpricedRow}
+        </Box>,
+        )
+
+      const mark = [
+        <Text key="mark" color="claude">
+          ◆{' '}
+        </Text>,
       ]
-      const sessionText = (v: (typeof views)[number]) => (v.draw === undefined ? '—' : formatPercent(v.draw))
-      const courseColor = (v: (typeof views)[number]) => (v.course?.kind === 'limit' ? 'error' : undefined)
 
-      if (!isOpen) {
-        // A row per window, in columns so the rows line up: the label, the meter, this session's
-        // part, and where the window is heading; the controls beside them.
-        return framed(
-          <Box key="body" flexDirection="row" alignItems="flex-start" columnGap={3}>
-            {table('compact', [
-              column(
-                'compact-labels',
-                views.map((v, i) => cell(`compact-label-${v.kind}`, [...(i === 0 ? mark : [<Text key="gap">{'  '}</Text>]), label(v.label)])),
-              ),
-              column(
-                'compact-meters',
-                views.map(v => cell(`compact-meter-${v.kind}`, meter(v))),
-              ),
-              column(
-                'compact-sessions',
-                views.map(v =>
-                  cell(`compact-session-${v.kind}`, [
-                    <Text key="label" dimColor>
-                      {'this session '}
-                    </Text>,
-                    <Text key="value" bold color="claude">
-                      {sessionText(v)}
-                    </Text>,
-                  ]),
+      if (isSubscription) {
+        const known = await read($, shares)
+        const draws = windows.map(w => sessionDraw(w.track, known[w.kind]))
+        // How old the account figure is: it only moves when this session hears back from the API.
+        const readAt = Math.max(...windows.map(w => w.track.readAt ?? w.track.since))
+        const readingAge = now - readAt >= 60_000 ? formatDuration(now - readAt) : undefined
+        const views = windows.map((w, i) => {
+          const percent = w.track.percentUsed
+          const elapsed = elapsedFraction(w.track.resetsAt, w.lengthMs, now)
+          const course = showForecast ? forecast(percent, elapsed, w.lengthMs) : undefined
+
+          return { ...w, percent, elapsed, color: paceColor(percent, elapsed, paceBand), draw: draws[i], course }
+        })
+
+        // The account's meter: the marker stands for the time gone by, so usage left of it is under pace.
+        // Where the surface draws SVG it is a thin drawn line; in the terminal it takes one cell's place.
+        const meter = (v: (typeof views)[number]): RenderChildren[] => [
+          ...(Svg
+            ? [
+                <Svg
+                  key="meter"
+                  source={meterSvg(v.percent, v.elapsed, v.color)}
+                  alt={`${formatPercent(v.percent)} used${
+                    v.elapsed === undefined ? '' : `, ${formatPercent(v.elapsed * 100)} of the window gone`
+                  }`}
+                  width={METER_SIZE.width}
+                  height={METER_SIZE.height}
+                />,
+              ]
+            : meterRuns(v.percent, v.elapsed, METER_CELLS).map((run, i) =>
+                run.kind === 'marker' ? (
+                  <Text key={`run-${i}`} bold color="text">
+                    {run.text}
+                  </Text>
+                ) : run.kind === 'filled' ? (
+                  <Text key={`run-${i}`} color={v.color}>
+                    {run.text}
+                  </Text>
+                ) : (
+                  <Text key={`run-${i}`} dimColor>
+                    {run.text}
+                  </Text>
                 ),
-              ),
-              ...(showForecast
-                ? [
-                    column(
-                      'compact-forecasts',
-                      views.map(v =>
-                        cell(
-                          `compact-forecast-${v.kind}`,
-                          <Text dimColor={!courseColor(v)} color={courseColor(v)}>
-                            {v.course ? formatForecast(v.course) : ''}
-                          </Text>,
+              )),
+          <Text key="percent" bold color={v.color}>{` ${formatPercent(v.percent)}`}</Text>,
+        ]
+        const sessionText = (v: (typeof views)[number]) => (v.draw === undefined ? '—' : formatPercent(v.draw))
+        const courseColor = (v: (typeof views)[number]) => (v.course?.kind === 'limit' ? 'error' : undefined)
+
+        if (!isOpen) {
+          // A row per window, in columns so the rows line up: the label, the meter, this session's
+          // part, and where the window is heading; the controls beside them.
+          return framed(
+            <Box key="body" flexDirection="row" alignItems="flex-start" columnGap={3}>
+              {table('compact', [
+                column(
+                  'compact-labels',
+                  views.map((v, i) => cell(`compact-label-${v.kind}`, [...(i === 0 ? mark : [<Text key="gap">{'  '}</Text>]), label(v.label)])),
+                ),
+                column(
+                  'compact-meters',
+                  views.map(v => cell(`compact-meter-${v.kind}`, meter(v))),
+                ),
+                column(
+                  'compact-sessions',
+                  views.map(v =>
+                    cell(`compact-session-${v.kind}`, [
+                      <Text key="label" dimColor>
+                        {'this session '}
+                      </Text>,
+                      <Text key="value" bold color="claude">
+                        {sessionText(v)}
+                      </Text>,
+                    ]),
+                  ),
+                ),
+                ...(showForecast
+                  ? [
+                      column(
+                        'compact-forecasts',
+                        views.map(v =>
+                          cell(
+                            `compact-forecast-${v.kind}`,
+                            <Text dimColor={!courseColor(v)} color={courseColor(v)}>
+                              {v.course ? formatForecast(v.course) : ''}
+                            </Text>,
+                          ),
                         ),
                       ),
+                    ]
+                  : []),
+              ])}
+              {controls}
+            </Box>,
+          )
+        }
+
+        const limitsTable = table('limits', [
+          column('limits-labels', [
+            cell('limits-title', [
+              ...mark,
+              <Text key="title" bold>
+                Limits
+              </Text>,
+            ]),
+            cell('limits-session-label', label('This session')),
+            cell('limits-account-label', label(readingAge ? `Account (${readingAge} ago)` : 'Account')),
+            cell('limits-reset-label', label('Resets in')),
+            ...(showForecast ? [cell('limits-forecast-label', label('Forecast'))] : []),
+          ]),
+          ...views.map(v =>
+            column(`limits-${v.kind}`, [
+              cell(`limits-head-${v.kind}`, header(v.label)),
+              cell(
+                `session-${v.kind}`,
+                <Text bold color="claude">
+                  {sessionText(v)}
+                </Text>,
+              ),
+              cell(`account-${v.kind}`, meter(v)),
+              cell(`reset-${v.kind}`, <Text dimColor>{formatResetIn(v.track.resetsAt, now) ?? '—'}</Text>),
+              ...(showForecast
+                ? [
+                    cell(
+                      `forecast-${v.kind}`,
+                      <Text dimColor={!courseColor(v)} color={courseColor(v)}>
+                        {v.course ? formatForecast(v.course) : '—'}
+                      </Text>,
                     ),
                   ]
                 : []),
-            ])}
+            ]),
+          ),
+        ])
+
+        return panel(
+          limitsTable,
+          whatIfTable(
+            windows.map(w => w.label),
+            i =>
+              comparison.ratios.length > 0
+                ? draws.map(d => (d === undefined ? '—' : formatPercent(d * (comparison.ratios[i] ?? 0))))
+                : undefined,
+          ),
+        )
+      }
+
+      if (!isOpen) {
+        return framed(
+          <Box key="body" flexDirection="row" flexWrap="wrap" columnGap={3}>
+            <Box key="compact" flexDirection="row">
+              {mark}
+              <Text dimColor>{'This session '}</Text>
+              <Text bold color="claude">
+                {formatUsd(cost)}
+              </Text>
+            </Box>
             {controls}
           </Box>,
         )
       }
 
-      const limitsTable = table('limits', [
-        column('limits-labels', [
-          cell('limits-title', [
+      const costTable = table('cost', [
+        column('cost-labels', [
+          cell('cost-title', [
             ...mark,
             <Text key="title" bold>
-              Limits
+              Cost
             </Text>,
           ]),
-          cell('limits-session-label', label('This session')),
-          cell('limits-account-label', label(readingAge ? `Account (${readingAge} ago)` : 'Account')),
-          cell('limits-reset-label', label('Resets in')),
-          ...(showForecast ? [cell('limits-forecast-label', label('Forecast'))] : []),
+          cell('cost-session-label', label('This session')),
         ]),
-        ...views.map(v =>
-          column(`limits-${v.kind}`, [
-            cell(`limits-head-${v.kind}`, header(v.label)),
-            cell(
-              `session-${v.kind}`,
-              <Text bold color="claude">
-                {sessionText(v)}
-              </Text>,
-            ),
-            cell(`account-${v.kind}`, meter(v)),
-            cell(`reset-${v.kind}`, <Text dimColor>{formatResetIn(v.track.resetsAt, now) ?? '—'}</Text>),
-            ...(showForecast
-              ? [
-                  cell(
-                    `forecast-${v.kind}`,
-                    <Text dimColor={!courseColor(v)} color={courseColor(v)}>
-                      {v.course ? formatForecast(v.course) : '—'}
-                    </Text>,
-                  ),
-                ]
-              : []),
-          ]),
-        ),
+        column('cost-values', [
+          cell('cost-head', header('API price')),
+          cell(
+            'session-cost',
+            <Text bold color="claude">
+              {formatUsd(cost)}
+            </Text>,
+          ),
+        ]),
       ])
 
       return panel(
-        limitsTable,
-        whatIfTable(
-          windows.map(w => w.label),
-          i =>
-            comparison.ratios.length > 0
-              ? draws.map(d => (d === undefined ? '—' : formatPercent(d * (comparison.ratios[i] ?? 0))))
-              : undefined,
+        costTable,
+        whatIfTable(['≈ cost'], i =>
+          cost !== null && comparison.ratios.length > 0 ? [formatUsd(cost * (comparison.ratios[i] ?? 0))] : undefined,
         ),
       )
-    }
+    })()
 
-    if (!isOpen) {
-      return framed(
-        <Box key="body" flexDirection="row" flexWrap="wrap" columnGap={3}>
-          <Box key="compact" flexDirection="row">
-            {mark}
-            <Text dimColor>{'This session '}</Text>
-            <Text bold color="claude">
-              {formatUsd(cost)}
-            </Text>
-          </Box>
-          {controls}
-        </Box>,
-      )
-    }
-
-    const costTable = table('cost', [
-      column('cost-labels', [
-        cell('cost-title', [
-          ...mark,
-          <Text key="title" bold>
-            Cost
-          </Text>,
-        ]),
-        cell('cost-session-label', label('This session')),
-      ]),
-      column('cost-values', [
-        cell('cost-head', header('API price')),
-        cell(
-          'session-cost',
-          <Text bold color="claude">
-            {formatUsd(cost)}
-          </Text>,
-        ),
-      ]),
-    ])
-
-    return panel(
-      costTable,
-      whatIfTable(['≈ cost'], i =>
-        cost !== null && comparison.ratios.length > 0 ? [formatUsd(cost * (comparison.ratios[i] ?? 0))] : undefined,
-      ),
+    return (
+      <Box flexDirection="column">
+        <Box key="limit-lens">{panelTree}</Box>
+        <Box key="others">{others}</Box>
+      </Box>
     )
   })
 
